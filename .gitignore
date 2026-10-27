@@ -1,6 +1,84 @@
-node_modules/
-dist/
+# ---------- Secrets & environment (NEVER commit) ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+credentials.json
+service-account*.json
+
+# ---------- Python ----------
+.venv/
+venv/
+env/
 __pycache__/
-*.pyc
-*.db
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.python-version.local
+
+# ---------- Node / frontend ----------
+node_modules/
+.next/
+out/
+.nuxt/
+.vite/
+.parcel-cache/
+.turbo/
+.cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+coverage/
+*.tsbuildinfo
+
+# ---------- Local databases & data dumps ----------
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.dump
+*.bak
+
+# ---------- Logs & temp ----------
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.pid
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Editors / IDEs / AI tools ----------
+.vscode/*
+!.vscode/settings.example.json
+.idea/
+*.swp
+*.swo
+.antigravity*/
+.cursor/
+.claude/
+.aider*
+
+# ---------- Recordings & scratch ----------
+*.mp4
+*.mov
+*.mkv
+scratch/
+notes.local.md
