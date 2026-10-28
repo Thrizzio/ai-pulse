@@ -37,3 +37,10 @@ def test_dashboard_scoped_to_token_org(client):
 
     headers_ravi, _ = login(client, "ravi@consult.test", "Bluepeak Retail")
     assert client.get("/dashboard?org_id=1", headers=headers_ravi).status_code == 403
+
+
+def test_select_org_rejects_non_member(client):
+    # Proves /auth/select-org returns 403 when user attempts to select an org they do not belong to.
+    headers, _ = login(client, "priya@northwind.test")
+    r = client.post("/auth/select-org", json={"org_id": 2}, headers=headers)
+    assert r.status_code == 403

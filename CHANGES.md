@@ -160,3 +160,50 @@ def org_dashboard(org_id: int | None = None, m: models.Membership = Depends(curr
 5. **Attempt to access Northwind data (`GET /dashboard?org_id=1` with Ravi's Bluepeak token):**
    - *Before fix:* HTTP 200 OK returning Northwind Logistics dashboard.
    - *After fix:* HTTP 403 Forbidden with `{"detail": "Cannot view another organization's dashboard"}`.
+
+
+## Change 3: Membership Check in /auth/select-org (Reject Non-Member Org Selection)
+
+### Problem in One Line
+The `/auth/select-org` endpoint minted a signed JWT scoped to any requested `org_id` without checking if the authenticated user was actually a member of that organization.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/auth_routes.py`
+**Before:**
+```python
+@router.post("/select-org")
+def select_org(body: SelectOrgIn, user: models.User = Depends(current_user)):
+    # Issue a token scoped to the chosen organization
+    return {"token": make_token(user.id, body.org_id), "org_id": body.org_id}
+```
+
+**After:**
+```python
+@router.post("/select-org")
+def select_org(body: SelectOrgIn, user: models.User = Depends(current_user), db: Session = Depends(get_db)):
+    membership = (
+        db.query(models.Membership)
+        .filter_by(user_id=user.id, org_id=body.org_id)
+        .first()
+    )
+    if not membership:
+        raise HTTPException(403, "Not a member of this organization")
+    return {"token": make_token(user.id, body.org_id), "org_id": body.org_id}
+```
+
+### Manual Verification Steps
+1. **Login as Priya (`priya@northwind.test`, password `pulse123`):**
+   - Call `POST /auth/login` with `{"email": "priya@northwind.test", "password": "pulse123"}` $\rightarrow$ copy unscoped token.
+2. **Select Priya's valid organization (Northwind Logistics, `org_id: 1`):**
+   - Call `POST /auth/select-org` with `{"org_id": 1}` and `Authorization: Bearer <unscoped_token>`.
+   - *Expected result (before and after fix):* HTTP 200 OK with scoped JWT.
+3. **Attempt to select unauthorized organization (Bluepeak Retail, `org_id: 2`):**
+   - Call `POST /auth/select-org` with `{"org_id": 2}` and `Authorization: Bearer <unscoped_token>`.
+   - *Before fix:* HTTP 200 OK returning signed JWT claiming Priya is authorized for Bluepeak.
+   - *After fix:* HTTP 403 Forbidden with `{"detail": "Not a member of this organization"}`.
+4. **Login as multi-org user Ravi (`ravi@consult.test`, password `pulse123`):**
+   - Call `POST /auth/login` with `{"email": "ravi@consult.test", "password": "pulse123"}`.
+   - Call `POST /auth/select-org` with `{"org_id": 1}` $\rightarrow$ HTTP 200 OK.
+   - Call `POST /auth/select-org` with `{"org_id": 2}` $\rightarrow$ HTTP 200 OK.
+   - Call `POST /auth/select-org` with `{"org_id": 999}` $\rightarrow$ HTTP 403 Forbidden.
