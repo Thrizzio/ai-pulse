@@ -448,3 +448,46 @@ Department scores summed raw question scores across all department members and d
 5. **Verify unassessed department status (Engineering & HR):**
    - *Before fix:* Engineering and HR showed `average_score: 0.0` and `level: "Beginner"`.
    - *After fix:* Engineering and HR show `average_score: null` and `level: "Not assessed"`.
+
+
+## Change 8: Consolidate Maturity Level Calculation (Use utils.maturity_level in Dashboard)
+
+### Problem in One Line
+`dashboard.py` defined its own duplicate `level_for` function with inconsistent threshold cutoffs (1.5, 2.5, 3.5) compared to `utils.maturity_level` (2.0, 3.0, 4.0), causing identical averages to be categorized under different maturity levels between employee reports and admin dashboards.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/dashboard.py`
+**Before:**
+```python
+def level_for(avg):
+    if avg is None:
+        return "Not assessed"
+    if avg < 1.5:
+        return "Beginner"
+    if avg < 2.5:
+        return "Exploring"
+    if avg < 3.5:
+        return "Practitioner"
+    return "Leader"
+...
+            "level": level_for(avg),
+```
+
+**After:**
+```python
+from ..utils import maturity_level
+...
+            "level": maturity_level(avg),
+```
+
+### Manual Verification Steps
+1. **Sign in as Admin Asha (`asha@northwind.test`, admin at Northwind Logistics):**
+   - Call `POST /auth/login` with `{"email": "asha@northwind.test", "password": "pulse123"}` $\rightarrow$ copy token.
+2. **Select organization 1 (Northwind Logistics):**
+   - Call `POST /auth/select-org` with `{"org_id": 1}` and `Authorization: Bearer <token>` $\rightarrow$ copy scoped token.
+3. **Fetch department analytics via `GET /dashboard`:**
+   - Call `GET /dashboard` with `Authorization: Bearer <scoped_token>`.
+4. **Verify consistent maturity level classification:**
+   - Verify that Support (avg 2.5) evaluates to `"Exploring"` according to the standard enterprise rubric in `utils.maturity_level` and unassessed departments evaluate to `"Not assessed"`.
+   - Verify `level_for` is completely removed from `dashboard.py`.

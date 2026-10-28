@@ -89,3 +89,9 @@ def test_department_score_math(client):
     assert depts["Sales"]["average_score"] == 4.0
     assert depts["Engineering"]["average_score"] is None
     assert depts["Engineering"]["level"] == "Not assessed"
+
+
+def test_dashboard_uses_shared_maturity_level(client):
+    # Proves dashboard uses utils.maturity_level and level_for is removed.
+    import app.routes.dashboard as dash_mod
+    assert not hasattr(dash_mod, "level_for")
