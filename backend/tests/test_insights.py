@@ -55,6 +55,12 @@ def _setup_test_org(org_name, dept_data):
     return admin_email, org_name
 
 
+def test_insights_unauthenticated_request_rejected(client):
+    # Proves unauthenticated request is rejected with 401 Unauthorized
+    r = client.get("/insights")
+    assert r.status_code == 401
+
+
 def test_insights_requires_admin_authorization(client):
     # Non-admin employee receives 403 Forbidden
     headers_emp, _ = login(client, "vikram@northwind.test", "Northwind Logistics")
@@ -153,6 +159,16 @@ def test_insights_suppressed_department_exclusion(client):
     assert "Confidential" not in patterns_and_actions
 
 
+def test_insights_insufficient_eligible_data_produces_empty_result(client):
+    # Standard seed has only small teams (< 5 completed respondents), resulting in empty insights and hidden_small_groups True
+    headers_asha, _ = login(client, "asha@northwind.test", "Northwind Logistics")
+    r = client.get("/insights", headers=headers_asha)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["insights"] == []
+    assert data["hidden_small_groups"] is True
+
+
 def test_insights_output_validation(client):
     # Validates schema structure, bounded string lengths, and whitelist priorities
     from app import seed
@@ -181,13 +197,58 @@ def test_insights_output_validation(client):
         seed.run(expanded=False)
 
 
+def test_insights_malformed_and_invalid_priority_rejected(client, monkeypatch):
+    # Proves malformed items or unsupported priorities (e.g. "critical") are rejected without fabricating findings
+    from app.services import insights_service
+    import httpx
+
+    class FakeResponse:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {
+                "choices": [{
+                    "message": {
+                        "content": '{"insights": ['
+                                   '{"department": "Engineering", "observed_pattern": "Valid pattern", "recommended_action": "Valid action", "reason": "Valid reason", "priority": "critical"},'
+                                   '{"department": "Engineering", "observed_pattern": "Another pattern", "recommended_action": "Another action", "reason": "Another reason", "priority": "high"}'
+                                   ']}'
+                    }
+                }]
+            }
+
+    monkeypatch.setattr(insights_service, "AI_MODE", "live")
+    monkeypatch.setattr(insights_service, "LLM_API_KEY", "fake-key")
+    monkeypatch.setattr(insights_service, "LLM_API_URL", "https://fake.llm/v1")
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: FakeResponse())
+
+    from app import seed
+    seed.run(expanded=True)
+    try:
+        headers, _ = login(client, "alex@apex.test", "Apex Global")
+        r = client.get("/insights", headers=headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["source"] == "ai"
+        # The item with invalid priority "critical" was rejected, leaving only the "high" priority item
+        assert len(data["insights"]) == 1
+        assert data["insights"][0]["priority"] == "high"
+    finally:
+        seed.run(expanded=False)
+
+
 def test_insights_llm_failure_handling(client, monkeypatch):
     # Proves system falls back to deterministic rule-based insights without crashing on LLM errors
-    from app.services import llm
-    def broken_llm(*args, **kwargs):
-        raise RuntimeError("External AI provider timeout 504")
+    from app.services import insights_service
+    import httpx
 
-    monkeypatch.setattr(llm, "score_answer", broken_llm)
+    def broken_post(*args, **kwargs):
+        raise httpx.ConnectTimeout("External AI provider timeout 504")
+
+    monkeypatch.setattr(insights_service, "AI_MODE", "live")
+    monkeypatch.setattr(insights_service, "LLM_API_KEY", "fake-key")
+    monkeypatch.setattr(insights_service, "LLM_API_URL", "https://fake.llm/v1")
+    monkeypatch.setattr(httpx, "post", broken_post)
 
     from app import seed
     seed.run(expanded=True)
@@ -201,3 +262,261 @@ def test_insights_llm_failure_handling(client, monkeypatch):
     finally:
         seed.run(expanded=False)
 
+
+def test_admin_can_access_insights_for_eligible_department(client):
+    # Proves admin can fetch department-specific insights for an eligible (k >= 5) department
+    from app import seed
+    seed.run(expanded=True)
+    try:
+        db = SessionLocal()
+        eng_dept = db.query(models.Department).filter_by(name="Engineering").first()
+        dept_id = eng_dept.id
+        db.close()
+
+        headers, _ = login(client, "alex@apex.test", "Apex Global")
+        r = client.get(f"/insights?department_id={dept_id}", headers=headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["department_id"] == dept_id
+        assert data["department"] == "Engineering"
+        assert len(data["insights"]) > 0
+        for it in data["insights"]:
+            assert it["department"] == "Engineering"
+    finally:
+        seed.run(expanded=False)
+
+
+def test_admin_cannot_access_insights_for_suppressed_department(client):
+    # Proves suppressed departments (< 5 completed respondents) cannot retrieve insights (403 Forbidden)
+    from app import seed
+    seed.run(expanded=True)
+    try:
+        db = SessionLocal()
+        # Customer Success at Apex has only 2 completed respondents (< 5)
+        cs_dept = db.query(models.Department).filter_by(name="Customer Success").first()
+        cs_id = cs_dept.id
+        db.close()
+
+        headers, _ = login(client, "alex@apex.test", "Apex Global")
+        r = client.get(f"/insights?department_id={cs_id}", headers=headers)
+        assert r.status_code == 403
+        assert "suppressed" in r.json()["detail"].lower() or "not eligible" in r.json()["detail"].lower()
+    finally:
+        seed.run(expanded=False)
+
+
+def test_admin_cannot_access_cross_tenant_department_insights(client):
+    # Proves admin of Apex Global cannot access department insights for Crestline Health
+    from app import seed
+    seed.run(expanded=True)
+    try:
+        db = SessionLocal()
+        crest_dept = db.query(models.Department).filter_by(name="Clinical Operations").first()
+        crest_dept_id = crest_dept.id
+        db.close()
+
+        headers, _ = login(client, "alex@apex.test", "Apex Global")
+        r = client.get(f"/insights?department_id={crest_dept_id}", headers=headers)
+        assert r.status_code == 403
+        assert "another organization" in r.json()["detail"].lower()
+    finally:
+        seed.run(expanded=False)
+
+
+def test_non_admin_cannot_access_department_insights(client):
+    # Proves employee cannot access department insights endpoint
+    from app import seed
+    seed.run(expanded=True)
+    try:
+        db = SessionLocal()
+        eng_dept = db.query(models.Department).filter_by(name="Engineering").first()
+        dept_id = eng_dept.id
+        db.close()
+
+        headers, _ = login(client, "priyanka@apex.test", "Apex Global")
+        r = client.get(f"/insights?department_id={dept_id}", headers=headers)
+        assert r.status_code == 403
+        assert "admins only" in r.json()["detail"].lower()
+    finally:
+        seed.run(expanded=False)
+
+
+def test_department_insights_receives_only_requested_department_data(client, monkeypatch):
+    # Proves LLM / service receives ONLY the requested department's aggregate data, not other departments
+    captured_payloads = []
+    from app.services import insights_service
+    orig_gen = insights_service.generate_insights
+
+    def spy_gen(depts):
+        captured_payloads.append(depts)
+        return orig_gen(depts)
+
+    monkeypatch.setattr(insights_service, "generate_insights", spy_gen)
+
+    from app import seed
+    seed.run(expanded=True)
+    try:
+        db = SessionLocal()
+        eng_dept = db.query(models.Department).filter_by(name="Engineering").first()
+        dept_id = eng_dept.id
+        db.close()
+
+        headers, _ = login(client, "alex@apex.test", "Apex Global")
+        r = client.get(f"/insights?department_id={dept_id}", headers=headers)
+        assert r.status_code == 200
+
+        assert len(captured_payloads) == 1
+        payload = captured_payloads[0]
+        # Must contain ONLY 1 department, and it must be Engineering
+        assert len(payload) == 1
+        assert payload[0]["department"] == "Engineering"
+        assert "Product" not in [d["department"] for d in payload]
+    finally:
+        seed.run(expanded=False)
+
+
+def test_department_insights_malformed_llm_response_falls_back(client, monkeypatch):
+    # Proves that unparseable non-JSON LLM responses safely fallback to rule-based insights
+    from app.services import insights_service
+    import httpx
+
+    class FakeGarbageResponse:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "Sorry, I cannot produce valid JSON today."}}]}
+
+    monkeypatch.setattr(insights_service, "AI_MODE", "live")
+    monkeypatch.setattr(insights_service, "LLM_API_KEY", "fake-key")
+    monkeypatch.setattr(insights_service, "LLM_API_URL", "https://fake.llm/v1")
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: FakeGarbageResponse())
+
+    from app import seed
+    seed.run(expanded=True)
+    try:
+        db = SessionLocal()
+        eng_dept = db.query(models.Department).filter_by(name="Engineering").first()
+        dept_id = eng_dept.id
+        db.close()
+
+        headers, _ = login(client, "alex@apex.test", "Apex Global")
+        r = client.get(f"/insights?department_id={dept_id}", headers=headers)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["source"] == "rules"
+        assert len(data["insights"]) > 0
+        assert data["department"] == "Engineering"
+    finally:
+        seed.run(expanded=False)
+
+
+def test_other_teams_insights_suppresses_rare_risks_for_sparse_groups(client):
+    # Proves that for Other teams with < 5 respondents, rare risks (count < 2) are suppressed,
+    # while shared risks (count >= 2) generate privacy-safe aggregate recommendations.
+    admin_email, org_name = _setup_test_org("OtherSparseOrg", {
+        "SmallDept1": [
+            {"email": "sd1_a@sparse.test", "completed": True, "flags": ["customer_data_shared", "policy_unaware"]},
+            {"email": "sd1_b@sparse.test", "completed": True, "flags": []},
+        ],
+        "SmallDept2": [
+            {"email": "sd2_a@sparse.test", "completed": True, "flags": ["policy_unaware"]},
+        ],
+    })
+    headers, _ = login(client, admin_email, org_name)
+    r = client.get("/insights?department_id=other", headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["department"] == "Other teams"
+    assert data["department_id"] == "other"
+
+    # customer_data_shared was only flagged by 1 respondent (< 2) -> suppressed!
+    # policy_unaware was flagged by 2 respondents (>= 2) -> retained!
+    combined_text = " ".join([
+        it["observed_pattern"] + " " + it["recommended_action"] + " " + it["reason"]
+        for it in data["insights"]
+    ])
+    assert "policy" in combined_text.lower() or "acceptable-use" in combined_text.lower()
+    assert "customer data shared" not in combined_text.lower()
+    assert "client data" not in combined_text.lower()
+    assert "SmallDept1" not in r.text
+    assert "SmallDept2" not in r.text
+
+
+def test_other_teams_insights_insufficient_data_shows_general_recommendation(client):
+    # Proves that when small teams have insufficient/sparse risk data (e.g. N < 2),
+    # a clear general governance recommendation is returned rather than specific individual risks.
+    admin_email, org_name = _setup_test_org("OtherTinyOrg", {
+        "TinyDept": [
+            {"email": "tiny@tiny.test", "completed": True, "flags": ["confidential_data_shared"]},
+        ],
+    })
+    headers, _ = login(client, admin_email, org_name)
+    r = client.get("/insights?department_id=other", headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["department"] == "Other teams"
+    assert len(data["insights"]) > 0
+
+    # General recommendation with low priority
+    ins = data["insights"][0]
+    assert ins["priority"] == "low"
+    assert "sparse" in ins["observed_pattern"].lower() or "insufficient" in ins["observed_pattern"].lower()
+    assert "confidential_data_shared" not in r.text
+    assert "TinyDept" not in r.text
+
+
+def test_other_teams_insights_prompt_input_minimization(client, monkeypatch):
+    # Proves the insights service receives only the aggregate "Other teams" record
+    # and NEVER individual department names, employee emails, or raw text.
+    captured_payloads = []
+    from app.services import insights_service
+    orig_func = insights_service.generate_other_teams_insights
+
+    def spy_func(target_dept):
+        captured_payloads.append(target_dept)
+        return orig_func(target_dept)
+
+    monkeypatch.setattr(insights_service, "generate_other_teams_insights", spy_func)
+
+    from app import seed
+    seed.run(expanded=True)
+    try:
+        headers, _ = login(client, "alex@apex.test", "Apex Global")
+        r = client.get("/insights?department_id=other", headers=headers)
+        assert r.status_code == 200
+
+        assert len(captured_payloads) == 1
+        payload = captured_payloads[0]
+        assert payload["department"] == "Other teams"
+        payload_str = str(payload)
+        assert "Customer Success" not in payload_str
+        assert "Legal & Compliance" not in payload_str
+        assert "@" not in payload_str
+    finally:
+        seed.run(expanded=False)
+
+
+def test_other_teams_insights_cross_tenant_isolation(client):
+    # Proves admin of Org A cannot access Other teams insights of Org B
+    from app import seed
+    seed.run(expanded=True)
+    try:
+        headers, _ = login(client, "alex@apex.test", "Apex Global")
+        r = client.get("/insights?department_id=other&org_id=2", headers=headers)
+        assert r.status_code == 403
+        assert "another organization" in r.json()["detail"].lower()
+    finally:
+        seed.run(expanded=False)
+
+
+def test_other_teams_insights_non_admin_rejected(client):
+    # Proves non-admin employee cannot access Other teams insights
+    from app import seed
+    seed.run(expanded=True)
+    try:
+        headers, _ = login(client, "priyanka@apex.test", "Apex Global")
+        r = client.get("/insights?department_id=other", headers=headers)
+        assert r.status_code == 403
+        assert "admins only" in r.json()["detail"].lower()
+    finally:
+        seed.run(expanded=False)

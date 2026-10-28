@@ -44,6 +44,8 @@ def generate_rule_based_insights(visible_departments: list[dict]) -> list[dict]:
     insights = []
 
     for d in visible_departments:
+        if d.get("suppressed"):
+            continue
         dept_name = d.get("department", "Unknown Department")
         risk_counts = d.get("risk_counts", {})
         avg_score = d.get("average_score")
@@ -104,19 +106,30 @@ def generate_rule_based_insights(visible_departments: list[dict]) -> list[dict]:
                 "reason": "Builds safe foundational proficiency and demonstrates immediate productivity value without security risks.",
                 "priority": "low",
             })
+        elif not has_dept_risk:
+            score_text = f"an average score of {avg_score} ({level})" if avg_score is not None else "healthy diagnostic participation"
+            insights.append({
+                "department": dept_name,
+                "observed_pattern": f"{dept_name} demonstrates solid AI maturity with {score_text} and zero identified risk flags.",
+                "recommended_action": "Document current departmental workflows as organizational benchmarks and establish peer mentoring.",
+                "reason": "Scales effective AI adoption patterns across other departments while sustaining high security and review standards.",
+                "priority": "low",
+            })
 
     return insights
 
 
 def generate_insights(visible_departments: list[dict]) -> dict:
     """Generates actionable insights. Reverts safely to deterministic rules on LLM failure."""
+    visible_departments = [d for d in visible_departments if not d.get("suppressed")]
     if not visible_departments:
         return {"insights": [], "source": "rules"}
 
     if AI_MODE != "live" or not LLM_API_KEY or not LLM_API_URL:
+        source_label = "mock" if AI_MODE == "mock" else "rules"
         return {
             "insights": generate_rule_based_insights(visible_departments),
-            "source": "rules",
+            "source": source_label,
         }
 
     # Format minimal, privacy-safe aggregate payload
@@ -170,9 +183,9 @@ def generate_insights(visible_departments: list[dict]) -> dict:
             pattern = str(it.get("observed_pattern") or "").strip()[:500]
             action = str(it.get("recommended_action") or "").strip()[:500]
             reason = str(it.get("reason") or "").strip()[:500]
-            priority = str(it.get("priority") or "medium").lower().strip()
+            priority = str(it.get("priority") or "").lower().strip()
             if priority not in VALID_PRIORITIES:
-                priority = "medium"
+                continue
 
             if pattern and action and reason:
                 validated.append({
@@ -199,3 +212,66 @@ def generate_insights(visible_departments: list[dict]) -> dict:
             "source": "rules",
         }
 
+
+def generate_other_teams_insights(target_dept: dict) -> dict:
+    """Generates privacy-safe actionable recommendations for the 'Other teams' aggregate.
+
+    Applies strict privacy safeguards:
+    - Never receives individual department names, employee IDs, raw answers, or individual scores.
+    - When completed respondents < 5: suppresses rare risk patterns (count < 2, or all risks if < 2 respondents).
+    - When data is insufficient or risks are suppressed: provides a clear general organizational governance recommendation.
+    """
+    dept_name = "Other teams"
+    responded = target_dept.get("responded") or 0
+    headcount = target_dept.get("employees") or 0
+    avg_score = target_dept.get("average_score")
+    level = target_dept.get("level") or "Not assessed"
+
+    # Get combined risk flags from internal field or risk_counts
+    raw_risks = target_dept.get("_other_flag_counts") or target_dept.get("risk_counts") or {}
+
+    # Privacy filtering: suppress rare risks if fewer than 5 respondents
+    safe_risks = {}
+    if responded >= 5:
+        # At k >= 5, all aggregate risks are permitted
+        safe_risks = {k: v for k, v in raw_risks.items() if k in ALLOWED_FLAGS and v > 0}
+    elif responded >= 2:
+        # When 2 <= responded < 5: suppress rare patterns (count < 2) to prevent individual re-identification
+        safe_risks = {k: v for k, v in raw_risks.items() if k in ALLOWED_FLAGS and v >= 2}
+    else:
+        # When responded < 2: all specific risks are suppressed
+        safe_risks = {}
+
+    # If insufficient privacy-safe risk data exists
+    if not safe_risks:
+        return {
+            "insights": [
+                {
+                    "department": dept_name,
+                    "observed_pattern": "Diagnostic participation in combined small teams is sparse (< 5 respondents) with no shared aggregate risk patterns meeting privacy thresholds.",
+                    "recommended_action": "Establish general organizational AI acceptable-use guidelines and provide standard baseline training across small teams.",
+                    "reason": "Provides proactive governance and literacy across smaller operational units without risking individual identification.",
+                    "priority": "low",
+                }
+            ],
+            "source": "rules",
+        }
+
+    # If safe risks exist, generate insights (rules or AI)
+    safe_dept_record = {
+        "department": dept_name,
+        "employees": headcount,
+        "responded": responded,
+        "average_score": avg_score,
+        "level": level,
+        "risk_counts": safe_risks,
+    }
+
+    if AI_MODE != "live" or not LLM_API_KEY or not LLM_API_URL:
+        source_label = "mock" if AI_MODE == "mock" else "rules"
+        return {
+            "insights": generate_rule_based_insights([safe_dept_record]),
+            "source": source_label,
+        }
+
+    return generate_insights([safe_dept_record])

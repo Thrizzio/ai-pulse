@@ -7,22 +7,23 @@ const PRIORITY_STYLES = {
   low: { background: "#f2f4f7", color: "#344054", border: "1px solid #eaecf0" },
 };
 
-export default function Insights({ org, onBack }) {
+export default function Insights({ org, department, onBack }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    api("/insights")
+    const query = department?.id != null ? `?department_id=${department.id}` : "";
+    api(`/insights${query}`)
       .then(setData)
       .catch((err) => setError(err.message));
-  }, [org]);
+  }, [org, department]);
 
   if (error) {
     return (
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h2>Department Insights</h2>
-          {onBack && <button onClick={onBack} style={{ background: "#666" }}>Back</button>}
+          <h2>{department?.department ? `${department.department} Insights` : "Department Insights"}</h2>
+          {onBack && <button onClick={onBack} style={{ background: "#666" }}>Back to Dashboard</button>}
         </div>
         <p className="error" style={{ marginTop: "16px" }}>Failed to generate insights: {error}</p>
       </div>
@@ -45,21 +46,32 @@ export default function Insights({ org, onBack }) {
     grouped[dept].push(item);
   }
   const departments = Object.keys(grouped);
+  const deptDisplayName = data.department || department?.department;
 
   return (
     <div className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2>{data.organization} - Department Insights</h2>
+        <h2>{data.organization} - {deptDisplayName ? `${deptDisplayName} Insights` : "Department Insights"}</h2>
         {onBack && <button onClick={onBack} style={{ background: "#666" }}>Back to Dashboard</button>}
       </div>
 
+      {department && (
+        <div style={{ background: "#f8f9fa", border: "1px solid #e9ecef", borderRadius: "6px", padding: "10px 14px", marginTop: "12px", marginBottom: "16px", display: "flex", gap: "24px", fontSize: "0.9rem", flexWrap: "wrap" }}>
+          <span><b>Department:</b> {department.department}</span>
+          <span><b>Headcount:</b> {department.employees}</span>
+          <span><b>Completed respondents:</b> {department.responded}</span>
+          <span><b>Average score:</b> {department.average_score !== null ? department.average_score : "—"}</span>
+          <span><b>Maturity level:</b> {department.level}</span>
+        </div>
+      )}
+
       <p style={{ color: "#555", marginTop: "8px", marginBottom: "16px" }}>
-        Practical governance actions and risk mitigation steps derived from aggregate diagnostic patterns across eligible departments.
+        Actionable governance recommendations and risk mitigation steps derived from privacy-filtered aggregate patterns across eligible departments, never from individual employee answers.
       </p>
 
       {data.source && (
         <p style={{ fontSize: "0.85rem", color: "#666", marginBottom: "20px" }}>
-          <b>Report engine:</b> {data.source === "ai" ? "AI Advisory Model" : "Deterministic Policy Rules"}
+          <b>Report engine:</b> {data.source === "ai" ? "AI Advisory Model" : data.source === "mock" ? "Mock Simulation" : "Deterministic Policy Rules"}
         </p>
       )}
 

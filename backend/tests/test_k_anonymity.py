@@ -45,9 +45,10 @@ def _setup_org(org_name, dept_data):
                 # Answer all questions
                 for idx, q in enumerate(qs):
                     flags = m_info.get("flags", []) if idx == 0 else []
+                    score = None if m_info.get("null_scores", False) else 4.0
                     db.add(models.Response(
                         membership_id=membership.id, question_id=q["id"],
-                        answer="Completed answer with sufficient detail.", score=4.0, flags=flags,
+                        answer="Completed answer with sufficient detail.", score=score, flags=flags,
                     ))
                 if m_info.get("duplicate_responses", False):
                     # Add duplicate responses for the same member
@@ -115,7 +116,15 @@ def test_other_teams_with_fewer_than_5_completed_is_hidden_and_sets_flag(client)
     headers, _ = login(client, admin_email, org_name)
     r = client.get("/dashboard", headers=headers)
     assert r.status_code == 200
-    assert r.json()["departments"] == []
+    depts = {d["department"]: d for d in r.json()["departments"]}
+    assert "Other teams" in depts
+    other = depts["Other teams"]
+    assert other["employees"] == 3
+    assert other["responded"] == 3
+    assert other["average_score"] == 4.0
+    assert other["level"] == "Leader"
+    assert other["id"] == "other"
+    assert other["risk_counts"] == {}
     assert r.json()["hidden_small_groups"] is True
 
 
@@ -174,4 +183,42 @@ def test_repeated_responses_do_not_inflate_distinct_count(client):
     assert r.status_code == 200
     dept_names = [d["department"] for d in r.json()["departments"]]
     assert "Analytics" not in dept_names
+
+
+def test_completed_respondents_without_numeric_scores_count_toward_privacy_threshold(client):
+    admin_email, org_name = _setup_org("KAnon-Org9", {
+        "ScorelessDept": [
+            {"email": f"noscore{i}@org9.test", "completed": True, "null_scores": True} for i in range(5)
+        ]
+    })
+    headers, _ = login(client, admin_email, org_name)
+    r = client.get("/dashboard", headers=headers)
+    assert r.status_code == 200
+    depts = {d["department"]: d for d in r.json()["departments"]}
+    assert "ScorelessDept" in depts
+    assert depts["ScorelessDept"]["responded"] == 5
+    assert depts["ScorelessDept"]["average_score"] is None
+    assert depts["ScorelessDept"]["level"] == "Not assessed"
+
+
+def test_suppressed_data_absent_from_api_payload(client):
+    admin_email, org_name = _setup_org("KAnon-Org10", {
+        "SmallDept": [{"email": f"s{i}@org10.test", "completed": True, "flags": ["confidential_data_shared"]} for i in range(3)]
+    })
+    headers, _ = login(client, admin_email, org_name)
+    r = client.get("/dashboard", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["departments"]) == 1
+    assert body["departments"][0]["department"] == "Other teams"
+    assert body["departments"][0]["employees"] == 3
+    assert body["departments"][0]["responded"] == 3
+    assert body["departments"][0]["average_score"] == 4.0
+    assert body["departments"][0]["level"] == "Leader"
+    assert body["departments"][0]["risk_counts"] == {}
+    assert body["top_risks"] == []
+    # Ensure raw payload string doesn't leak SmallDept or its confidential risk
+    raw_text = r.text
+    assert "SmallDept" not in raw_text
+    assert "confidential_data_shared" not in raw_text
 

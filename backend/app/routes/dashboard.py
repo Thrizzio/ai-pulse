@@ -19,6 +19,7 @@ def compute_dashboard_aggregates(db: Session, target_org_id: int) -> dict:
     departments = []
     visible_flags = {}
 
+    other_teams_completed_ids = set()
     other_teams_member_averages = []
     other_teams_employees = 0
     other_teams_flags = []
@@ -26,6 +27,7 @@ def compute_dashboard_aggregates(db: Session, target_org_id: int) -> dict:
 
     for dept in org.departments:
         dept_members = [x for x in members if x.department_id == dept.id]
+        completed_member_ids = set()
         completed_member_averages = []
         dept_flags = []
 
@@ -42,6 +44,7 @@ def compute_dashboard_aggregates(db: Session, target_org_id: int) -> dict:
             is_completed = bool(assigned_ids and assigned_ids.issubset(answered_ids))
 
             if is_completed:
+                completed_member_ids.add(dm.id)
                 user_scores = [r.score for r in rows if r.score is not None]
                 if user_scores:
                     completed_member_averages.append(sum(user_scores) / len(user_scores))
@@ -49,15 +52,19 @@ def compute_dashboard_aggregates(db: Session, target_org_id: int) -> dict:
                     for f in r.flags or []:
                         dept_flags.append(f)
 
-        distinct_completed_count = len(completed_member_averages)
+        distinct_completed_count = len(completed_member_ids)
 
         if distinct_completed_count >= 5:
-            dept_avg = sum(completed_member_averages) / distinct_completed_count if distinct_completed_count else None
+            dept_avg = (
+                sum(completed_member_averages) / len(completed_member_averages)
+                if completed_member_averages else None
+            )
             dept_risk_counts = {}
             for f in dept_flags:
                 dept_risk_counts[f] = dept_risk_counts.get(f, 0) + 1
                 visible_flags[f] = visible_flags.get(f, 0) + 1
             departments.append({
+                "id": dept.id,
                 "department": dept.name,
                 "employees": len(dept_members),
                 "responded": distinct_completed_count,
@@ -68,28 +75,50 @@ def compute_dashboard_aggregates(db: Session, target_org_id: int) -> dict:
         else:
             has_suppressed_departments = True
             other_teams_employees += len(dept_members)
+            other_teams_completed_ids.update(completed_member_ids)
             other_teams_member_averages.extend(completed_member_averages)
             other_teams_flags.extend(dept_flags)
 
     # Aggregate for Other teams
-    other_completed_count = len(other_teams_member_averages)
-    if other_completed_count >= 5:
-        other_avg = sum(other_teams_member_averages) / other_completed_count
-        other_risk_counts = {}
+    if has_suppressed_departments:
+        other_completed_count = len(other_teams_completed_ids)
+        other_avg = (
+            sum(other_teams_member_averages) / len(other_teams_member_averages)
+            if other_teams_member_averages else None
+        )
+        other_flag_counts = {}
         for f in other_teams_flags:
-            other_risk_counts[f] = other_risk_counts.get(f, 0) + 1
-            visible_flags[f] = visible_flags.get(f, 0) + 1
-        departments.append({
-            "department": "Other teams",
-            "employees": other_teams_employees,
-            "responded": other_completed_count,
-            "average_score": round(other_avg, 2),
-            "level": maturity_level(other_avg),
-            "risk_counts": other_risk_counts,
-        })
-        hidden_small_groups = False
+            other_flag_counts[f] = other_flag_counts.get(f, 0) + 1
+
+        if other_completed_count >= 5:
+            for f in other_teams_flags:
+                visible_flags[f] = visible_flags.get(f, 0) + 1
+            departments.append({
+                "id": "other",
+                "department": "Other teams",
+                "employees": other_teams_employees,
+                "responded": other_completed_count,
+                "average_score": round(other_avg, 2) if other_avg is not None else None,
+                "level": maturity_level(other_avg),
+                "risk_counts": other_flag_counts,
+                "suppressed": False,
+            })
+            hidden_small_groups = False
+        else:
+            departments.append({
+                "id": "other",
+                "department": "Other teams",
+                "employees": other_teams_employees,
+                "responded": other_completed_count,
+                "average_score": round(other_avg, 2) if other_avg is not None else None,
+                "level": maturity_level(other_avg) if other_avg is not None else "Not assessed",
+                "risk_counts": {},
+                "_other_flag_counts": other_flag_counts,
+                "suppressed": False,
+            })
+            hidden_small_groups = True
     else:
-        hidden_small_groups = has_suppressed_departments
+        hidden_small_groups = False
 
     return {
         "organization": org.name,
@@ -107,4 +136,14 @@ def org_dashboard(org_id: int | None = None, m: models.Membership = Depends(curr
     if org_id is not None and org_id != m.org_id:
         raise HTTPException(403, "Cannot view another organization's dashboard")
 
-    return compute_dashboard_aggregates(db, m.org_id)
+    agg = compute_dashboard_aggregates(db, m.org_id)
+    clean_depts = [
+        {k: v for k, v in d.items() if not k.startswith("_")}
+        for d in agg["departments"]
+    ]
+    return {
+        "organization": agg["organization"],
+        "departments": clean_depts,
+        "top_risks": agg["top_risks"],
+        "hidden_small_groups": agg["hidden_small_groups"],
+    }

@@ -19,11 +19,6 @@ export default function Dashboard({ org, onBack, onViewInsights }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2>{data.organization} - Executive Dashboard</h2>
         <div>
-          {onViewInsights && (
-            <button onClick={onViewInsights} style={{ marginRight: "8px" }}>
-              Department Insights
-            </button>
-          )}
           {onBack && <button onClick={onBack} style={{ background: "#666" }}>Back</button>}
         </div>
       </div>
@@ -36,16 +31,35 @@ export default function Dashboard({ org, onBack, onViewInsights }) {
             <th style={{ padding: "8px" }}>Responded</th>
             <th style={{ padding: "8px" }}>Average Score</th>
             <th style={{ padding: "8px" }}>Maturity Level</th>
+            <th style={{ padding: "8px" }}>Actions</th>
           </tr>
         </thead>
         <tbody>
           {data.departments.map((d) => (
             <tr key={d.department} style={{ borderBottom: "1px solid #f0f0f0" }}>
               <td style={{ padding: "8px" }}><b>{d.department}</b></td>
-              <td style={{ padding: "8px" }}>{d.employees}</td>
-              <td style={{ padding: "8px" }}>{d.responded}</td>
-              <td style={{ padding: "8px" }}>{d.average_score !== null ? d.average_score : "—"}</td>
-              <td style={{ padding: "8px" }}>{d.level}</td>
+              {d.suppressed ? (
+                <td colSpan={4} style={{ padding: "8px", color: "#666", fontStyle: "italic" }}>
+                  Suppressed for privacy
+                </td>
+              ) : (
+                <>
+                  <td style={{ padding: "8px" }}>{d.employees !== null ? d.employees : "—"}</td>
+                  <td style={{ padding: "8px" }}>{d.responded !== null ? d.responded : "—"}</td>
+                  <td style={{ padding: "8px" }}>{d.average_score !== null ? d.average_score : "—"}</td>
+                  <td style={{ padding: "8px" }}>{d.level}</td>
+                </>
+              )}
+              <td style={{ padding: "8px" }}>
+                {d.id != null && onViewInsights && (
+                  <button
+                    onClick={() => onViewInsights(d)}
+                    style={{ padding: "4px 10px", fontSize: "0.85rem" }}
+                  >
+                    Insights
+                  </button>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
