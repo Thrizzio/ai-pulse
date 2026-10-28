@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../api.js";
 
-export default function Dashboard({ org, onBack }) {
+export default function Dashboard({ org, onBack, onViewInsights }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
@@ -18,7 +18,14 @@ export default function Dashboard({ org, onBack }) {
     <div className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2>{data.organization} - Executive Dashboard</h2>
-        {onBack && <button onClick={onBack} style={{ background: "#666" }}>Back</button>}
+        <div>
+          {onViewInsights && (
+            <button onClick={onViewInsights} style={{ marginRight: "8px" }}>
+              Department Insights
+            </button>
+          )}
+          {onBack && <button onClick={onBack} style={{ background: "#666" }}>Back</button>}
+        </div>
       </div>
 
       <table style={{ width: "100%", borderCollapse: "collapse", marginTop: "16px" }}>
@@ -43,6 +50,12 @@ export default function Dashboard({ org, onBack }) {
           ))}
         </tbody>
       </table>
+
+      {data.hidden_small_groups && (
+        <p style={{ color: "#666", fontSize: "0.9rem", fontStyle: "italic", marginTop: "12px" }}>
+          Note: One or more departments with fewer than 5 completed diagnostics are hidden to protect employee anonymity.
+        </p>
+      )}
 
       <h3 style={{ marginTop: "24px" }}>Top Company Risks</h3>
       {data.top_risks && data.top_risks.length > 0 ? (

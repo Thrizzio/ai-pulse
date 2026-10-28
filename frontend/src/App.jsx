@@ -4,6 +4,7 @@ import OrgPicker from "./pages/OrgPicker.jsx";
 import Diagnostic from "./pages/Diagnostic.jsx";
 import Report from "./pages/Report.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
+import Insights from "./pages/Insights.jsx";
 import { getToken } from "./api.js";
 
 export default function App() {
@@ -98,7 +99,19 @@ export default function App() {
           onBack={goBackToOrgs}
         />
       )}
-      {step === "dashboard" && <Dashboard org={org} onBack={goBackToOrgs} />}
+      {step === "dashboard" && (
+        <Dashboard
+          org={org}
+          onBack={goBackToOrgs}
+          onViewInsights={() => { setStep("insights"); localStorage.setItem("step", "insights"); }}
+        />
+      )}
+      {step === "insights" && (
+        <Insights
+          org={org}
+          onBack={() => { setStep("dashboard"); localStorage.setItem("step", "dashboard"); }}
+        />
+      )}
     </div>
   );
 }
