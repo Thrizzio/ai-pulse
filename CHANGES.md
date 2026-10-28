@@ -491,3 +491,39 @@ from ..utils import maturity_level
 4. **Verify consistent maturity level classification:**
    - Verify that Support (avg 2.5) evaluates to `"Exploring"` according to the standard enterprise rubric in `utils.maturity_level` and unassessed departments evaluate to `"Not assessed"`.
    - Verify `level_for` is completely removed from `dashboard.py`.
+
+
+## Change 9: Fix Sham Test (test_admin_cannot_see_other_org)
+
+### Problem in One Line
+`test_admin_cannot_see_other_org` previously queried `org_id=1` (the admin's own organization) and asserted HTTP 200, creating a sham test that did not verify cross-tenant access denial.
+
+### Before and After Code (Key Lines)
+
+#### `backend/tests/test_api.py`
+**Before:**
+```python
+def test_admin_cannot_see_other_org(client):
+    headers, _ = login(client, "asha@northwind.test", "Northwind Logistics")
+    r = client.get("/dashboard?org_id=1", headers=headers)
+    assert r.status_code == 200
+    assert "departments" in r.json()
+```
+
+**After:**
+```python
+def test_admin_cannot_see_other_org(client):
+    # Proves an admin cannot view another org dashboard (returns 403).
+    headers, _ = login(client, "asha@northwind.test", "Northwind Logistics")
+    r = client.get("/dashboard?org_id=2", headers=headers)
+    assert r.status_code == 403
+```
+
+### Manual Verification Steps
+1. **Sign in as Admin Asha (`asha@northwind.test`, admin at Northwind Logistics, org 1):**
+   - Call `POST /auth/login` with `{"email": "asha@northwind.test", "password": "pulse123"}` $\rightarrow$ copy token.
+2. **Select organization 1 (Northwind Logistics):**
+   - Call `POST /auth/select-org` with `{"org_id": 1}` and `Authorization: Bearer <token>` $\rightarrow$ copy scoped token.
+3. **Attempt to fetch organization 2 (Bluepeak Retail) dashboard:**
+   - Call `GET /dashboard?org_id=2` with `Authorization: Bearer <scoped_token>`.
+   - *Expected result:* HTTP 403 Forbidden `{"detail": "Cannot view another organization's dashboard"}`.
