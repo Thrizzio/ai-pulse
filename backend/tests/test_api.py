@@ -27,3 +27,13 @@ def test_admin_cannot_see_other_org(client):
     r = client.get("/dashboard?org_id=1", headers=headers)
     assert r.status_code == 200
     assert "departments" in r.json()
+
+
+def test_dashboard_scoped_to_token_org(client):
+    # Proves dashboard binds to token org: cross-org query returns 403, and Ravi cannot read org A.
+    headers_asha, _ = login(client, "asha@northwind.test", "Northwind Logistics")
+    assert client.get("/dashboard", headers=headers_asha).status_code == 200
+    assert client.get("/dashboard?org_id=2", headers=headers_asha).status_code == 403
+
+    headers_ravi, _ = login(client, "ravi@consult.test", "Bluepeak Retail")
+    assert client.get("/dashboard?org_id=1", headers=headers_ravi).status_code == 403

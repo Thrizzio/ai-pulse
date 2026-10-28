@@ -21,15 +21,19 @@ def level_for(avg):
 
 
 @router.get("")
-def org_dashboard(org_id: int, m: models.Membership = Depends(current_membership), db: Session = Depends(get_db)):
+def org_dashboard(org_id: int | None = None, m: models.Membership = Depends(current_membership), db: Session = Depends(get_db)):
     if m.role != "admin":
         raise HTTPException(403, "Admins only")
 
-    org = db.get(models.Organization, org_id)
+    if org_id is not None and org_id != m.org_id:
+        raise HTTPException(403, "Cannot view another organization's dashboard")
+
+    target_org_id = m.org_id
+    org = db.get(models.Organization, target_org_id)
     if not org:
         raise HTTPException(404, "Organization not found")
 
-    members = db.query(models.Membership).filter_by(org_id=org_id).all()
+    members = db.query(models.Membership).filter_by(org_id=target_org_id).all()
     departments = []
     all_flags = {}
     for dept in org.departments:

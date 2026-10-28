@@ -87,3 +87,76 @@ Tests in `backend/tests/test_setup.py`:
 - `test_dockerfile_cmd_uses_app_main`: **PASSED**
 - `test_backend_env_not_tracked_in_git`: **PASSED**
 
+
+
+## Change 2: Bind /dashboard to Active Token Organization (Fix Cross-Tenant Access)
+
+### Problem in One Line
+The `/dashboard` endpoint accepted an unvalidated `org_id` query parameter, allowing admins to view other companies' dashboards and allowing multi-org users (like Ravi) to escalate privileges across organizations.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/dashboard.py`
+**Before:**
+```python
+@router.get("")
+def org_dashboard(org_id: int, m: models.Membership = Depends(current_membership), db: Session = Depends(get_db)):
+    if m.role != "admin":
+        raise HTTPException(403, "Admins only")
+
+    org = db.get(models.Organization, org_id)
+    if not org:
+        raise HTTPException(404, "Organization not found")
+
+    members = db.query(models.Membership).filter_by(org_id=org_id).all()
+```
+
+**After:**
+```python
+@router.get("")
+def org_dashboard(org_id: int | None = None, m: models.Membership = Depends(current_membership), db: Session = Depends(get_db)):
+    if m.role != "admin":
+        raise HTTPException(403, "Admins only")
+
+    if org_id is not None and org_id != m.org_id:
+        raise HTTPException(403, "Cannot view another organization's dashboard")
+
+    target_org_id = m.org_id
+    org = db.get(models.Organization, target_org_id)
+    if not org:
+        raise HTTPException(404, "Organization not found")
+
+    members = db.query(models.Membership).filter_by(org_id=target_org_id).all()
+```
+
+#### `frontend/src/pages/Dashboard.jsx`
+**Before:**
+```javascript
+  useEffect(() => {
+    api(`/dashboard?org_id=${org.org_id}`).then(setData);
+  }, [org]);
+```
+
+**After:**
+```javascript
+  useEffect(() => {
+    api("/dashboard").then(setData);
+  }, [org]);
+```
+
+### Manual Verification Steps
+1. **Login as Asha and select Northwind Logistics:**
+   - Call `POST /auth/login` with `{"email": "asha@northwind.test", "password": "pulse123"}`.
+   - Call `POST /auth/select-org` with `{"org_id": 1}` to obtain scoped Bearer token.
+2. **Access dashboard with no query parameter (`GET /dashboard`):**
+   - *Before fix:* HTTP 422 Unprocessable Entity (FastAPI error: `org_id` query parameter required).
+   - *After fix:* HTTP 200 OK returning Northwind Logistics dashboard.
+3. **Attempt cross-tenant access to Bluepeak (`GET /dashboard?org_id=2` with Asha's token):**
+   - *Before fix:* HTTP 200 OK returning Bluepeak Retail's confidential data.
+   - *After fix:* HTTP 403 Forbidden with `{"detail": "Cannot view another organization's dashboard"}`.
+4. **Login as Ravi and select Bluepeak Retail (where Ravi is an admin):**
+   - Call `POST /auth/login` with `{"email": "ravi@consult.test", "password": "pulse123"}`.
+   - Call `POST /auth/select-org` with `{"org_id": 2}` to obtain scoped Bearer token.
+5. **Attempt to access Northwind data (`GET /dashboard?org_id=1` with Ravi's Bluepeak token):**
+   - *Before fix:* HTTP 200 OK returning Northwind Logistics dashboard.
+   - *After fix:* HTTP 403 Forbidden with `{"detail": "Cannot view another organization's dashboard"}`.

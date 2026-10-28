@@ -6,7 +6,7 @@ export default function Dashboard({ org }) {
   const [data, setData] = useState(null);
 
   useEffect(() => {
-    api(`/dashboard?org_id=${org.org_id}`).then(setData);
+    api("/dashboard").then(setData);
   }, [org]);
 
   return (
