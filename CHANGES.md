@@ -747,3 +747,39 @@ Added a red `Delete My Data` action calling `DELETE /reports/me`, displaying a c
 4. **Verify employee data deletion from UI:**
    - Sign in as Priya, view report, and click `Delete My Data`.
    - *Expected result:* Dialog confirms deletion, calling `DELETE /reports/me`, and report displays 0 answers and "Not assessed".
+
+
+## Change 13: Dual Seed Mode (Standard Pilot & Expanded Enterprise Dataset)
+
+### Problem in One Line
+Testing the application with realistic team sizes and cross-department metrics was constrained by the small 10-person pilot dataset where no department had 5 or more employees.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/seed.py`
+**Before:**
+`seed.py` only contained `run()` which hardcoded the pilot dataset (Northwind Logistics & Bluepeak Retail).
+
+**After:**
+Modularized into:
+- `_reset_database()`: Drops all tables and recreates them, cleanly wiping previous data.
+- `run_standard()`: Populates Northwind Logistics & Bluepeak Retail.
+- `run_expanded()`: Populates Apex Global (20+ employees across Engineering [6], Product [5], Customer Success [3], Legal & Compliance [2]) and Crestline Health, with varied answers, open response AI evaluations, and multiple organizations.
+- `run(expanded: bool | None = None)`: Toggles between standard and expanded datasets via `.env` (`EXPANDED_SEED=true/false`) or CLI flags (`--standard` / `--expanded`).
+
+### Manual Verification Steps
+1. **Run standard seed:**
+   ```bash
+   cd backend
+   python -m app.seed --standard
+   ```
+   *Expected result:* Resets DB and seeds Northwind Logistics & Bluepeak Retail.
+2. **Run expanded enterprise seed:**
+   ```bash
+   cd backend
+   python -m app.seed --expanded
+   ```
+   *Expected result:* Resets DB and seeds Apex Global & Crestline Health with 20+ employees across 7 departments.
+3. **Verify in App / Browser:**
+   - Log in as `alex@apex.test` (password: `pulse123`) to view Apex Global's executive dashboard with departments having 5+ respondents.
+   - Log in as `marcus@apex.test` to test multi-org switching between Apex Global and Crestline Health.

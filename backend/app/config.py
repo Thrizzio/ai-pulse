@@ -16,3 +16,4 @@ LLM_API_URL = os.getenv("LLM_API_URL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "")
 TOKEN_HOURS = 12
+EXPANDED_SEED = os.getenv("EXPANDED_SEED", "false").lower() in ("true", "1", "yes")

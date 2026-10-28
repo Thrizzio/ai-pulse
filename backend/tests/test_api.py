@@ -132,3 +132,20 @@ def test_ai_scoring_hardening_and_prompt_isolation(client):
         assert res["source"] == "mock"
     finally:
         llm_service.score_answer = orig_score_answer
+
+
+
+def test_seed_mode_selection(client):
+    # Proves seed can toggle between standard pilot and expanded enterprise datasets.
+    from app import seed
+    seed.run(expanded=True)
+    headers_apex, _ = login(client, "alex@apex.test", "Apex Global")
+    r = client.get("/dashboard", headers=headers_apex)
+    assert r.status_code == 200
+    assert r.json()["organization"] == "Apex Global"
+    depts = {d["department"]: d for d in r.json()["departments"]}
+    assert "Engineering" in depts
+    assert depts["Engineering"]["employees"] == 6
+
+    # Reset back to standard seed
+    seed.run(expanded=False)
