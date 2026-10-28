@@ -5,11 +5,14 @@ AI_MODE=live  -> calls an OpenAI-compatible chat completions endpoint
 """
 import hashlib
 import json
+import logging
 import os
 
 import httpx
 
 from ..config import AI_MODE, LLM_API_URL, LLM_API_KEY, LLM_MODEL
+
+logger = logging.getLogger(__name__)
 
 _MOCK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "mock_ai_responses.json")
 
@@ -39,12 +42,17 @@ def score_answer(question: str, answer: str) -> tuple[str, str]:
     if AI_MODE == "mock":
         return _mock(answer), "mock"
 
-    if not LLM_API_KEY or not LLM_API_URL:
+    sanitized_url = (LLM_API_URL or "").strip().strip('"').strip("'")
+    if not LLM_API_KEY or not sanitized_url:
         raise RuntimeError("LLM API key or URL is not configured for live AI scoring")
+
+    # Verify runtime configuration immediately before HTTP request (logging sanitized URL and status, never secrets)
+    logger.info("Executing LLM scoring request: endpoint=%s, model=%s, key_configured=%s",
+                sanitized_url, LLM_MODEL, bool(LLM_API_KEY))
 
     try:
         r = httpx.post(
-            LLM_API_URL,
+            sanitized_url,
             headers={"Authorization": f"Bearer {LLM_API_KEY}"},
             json={
                 "model": LLM_MODEL,

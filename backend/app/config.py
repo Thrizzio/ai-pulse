@@ -7,13 +7,24 @@ if os.path.exists(_env_path):
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip())
+            val = v.strip()
+            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                val = val[1:-1].strip()
+            os.environ.setdefault(k.strip(), val)
 
-SECRET_KEY = os.getenv("SECRET_KEY", "ai-pulse-dev-secret")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./aipulse.db")
-AI_MODE = os.getenv("AI_MODE", "mock")  # "mock" or "live"
-LLM_API_URL = os.getenv("LLM_API_URL", "")
-LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "")
+
+def _clean_env(name: str, default: str = "") -> str:
+    v = os.getenv(name, default).strip()
+    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+        v = v[1:-1].strip()
+    return v
+
+
+SECRET_KEY = _clean_env("SECRET_KEY", "ai-pulse-dev-secret")
+DATABASE_URL = _clean_env("DATABASE_URL", "sqlite:///./aipulse.db")
+AI_MODE = _clean_env("AI_MODE", "mock")  # "mock" or "live"
+LLM_API_URL = _clean_env("LLM_API_URL", "")
+LLM_API_KEY = _clean_env("LLM_API_KEY", "")
+LLM_MODEL = _clean_env("LLM_MODEL", "")
 TOKEN_HOURS = 12
-EXPANDED_SEED = os.getenv("EXPANDED_SEED", "false").lower() in ("true", "1", "yes")
+EXPANDED_SEED = _clean_env("EXPANDED_SEED", "false").lower() in ("true", "1", "yes")

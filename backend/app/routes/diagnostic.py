@@ -53,7 +53,8 @@ def submit(body: SubmitIn, m: models.Membership = Depends(current_membership), d
             if option is None:
                 raise HTTPException(422, f"Invalid option for {q['id']}")
 
-    db.query(models.Response).filter_by(membership_id=m.id).delete()
+    # Score and construct all responses in memory first before modifying the database
+    new_responses = []
     bank = expected_map
     for a in body.answers:
         q = bank.get(a.question_id)
@@ -73,6 +74,16 @@ def submit(body: SubmitIn, m: models.Membership = Depends(current_membership), d
             resp.score = result["score"]
             resp.reason = result["reason"]
             resp.flags = result["flags"]
-        db.add(resp)
-    db.commit()
+        new_responses.append(resp)
+
+    # Perform atomic replacement: remove previous responses and save new ones in one transaction
+    try:
+        db.query(models.Response).filter_by(membership_id=m.id).delete()
+        for r in new_responses:
+            db.add(r)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
     return {"saved": len(body.answers)}
