@@ -69,3 +69,12 @@ def test_submit_replaces_previous_answers(client):
     assert client.post("/diagnostic/submit", json={"answers": answers}, headers=headers).status_code == 200
     report = client.get("/reports/me", headers=headers).json()
     assert report["answered"] == 6
+
+
+def test_lead_employee_sees_senior_questions(client):
+    # Proves lead seniority receives senior and mid level questions via GET /diagnostic/questions.
+    headers, _ = login(client, "dev@northwind.test", "Northwind Logistics")
+    r = client.get("/diagnostic/questions", headers=headers)
+    assert r.status_code == 200
+    q_ids = {q["id"] for q in r.json()}
+    assert "eng-review" in q_ids and "eng-arch" in q_ids

@@ -331,3 +331,64 @@ Diagnostic submissions appended new response rows without deleting previous answ
    - POST `/diagnostic/submit` with 6 answers again.
    - *Before fix:* GET `/reports/me` returned `answered: 14` (accumulated 2 + 6 + 6) and averaged old and new scores together.
    - *After fix:* GET `/reports/me` returns `answered: 6` (replaces previous responses), with scores reflecting only the latest submission.
+
+
+## Change 6: Seniority Rank Fix in Questions Service (Numeric Ranks Instead of String Comparison)
+
+### Problem in One Line
+`questions_for` compared seniority strings lexicographically (`seniority < q.get("min_seniority", "junior")`), causing lead employees (alphabetical 'l') to be improperly filtered out of 'mid' and 'senior' questions ('l' < 'm' and 'l' < 's' evaluated to True).
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/services/questions.py`
+**Before:**
+```python
+def questions_for(job_role: str, seniority: str):
+    """Common questions for everyone + questions for this job role, filtered by seniority."""
+    result = []
+    for q in load_questions():
+        if q["roles"] != ["all"] and job_role not in q["roles"]:
+            continue
+        if seniority < q.get("min_seniority", "junior"):
+            continue
+        result.append(q)
+    return result
+```
+
+**After:**
+```python
+SENIORITY_RANKS = {
+    "junior": 1,
+    "mid": 2,
+    "senior": 3,
+    "lead": 4,
+}
+
+...
+
+def questions_for(job_role: str, seniority: str):
+    """Common questions for everyone + questions for this job role, filtered by seniority."""
+    user_rank = SENIORITY_RANKS.get(seniority, 1)
+    result = []
+    for q in load_questions():
+        if q["roles"] != ["all"] and job_role not in q["roles"]:
+            continue
+        if user_rank < SENIORITY_RANKS.get(q.get("min_seniority", "junior"), 1):
+            continue
+        result.append(q)
+    return result
+```
+
+### Manual Verification Steps
+1. **Sign in as Dev (`dev@northwind.test`, lead engineer at Northwind Logistics):**
+   - Call `POST /auth/login` with `{"email": "dev@northwind.test", "password": "pulse123"}` $\rightarrow$ copy token.
+2. **Select organization 1 (Northwind Logistics):**
+   - Call `POST /auth/select-org` with `{"org_id": 1}` and `Authorization: Bearer <token>` $\rightarrow$ copy scoped token.
+3. **Fetch questions via `GET /diagnostic/questions`:**
+   - Call `GET /diagnostic/questions` with `Authorization: Bearer <scoped_token>`.
+   - *Before fix:* Returned only junior-level role questions (`eng-assistant`) and common questions. `eng-review` (mid) and `eng-arch` (senior) were omitted because Python string comparison `'lead' < 'mid'` and `'lead' < 'senior'` evaluated to `True`.
+   - *After fix:* Returned both `eng-review` and `eng-arch` alongside `eng-assistant` and common questions because lead (rank 4) >= mid (rank 2) and senior (rank 3).
+4. **Verify Lead Manager questions:**
+   - Log in as a lead manager user or test `questions_for("manager", "lead")`.
+   - *Before fix:* `mgr-policy` was missing.
+   - *After fix:* `mgr-policy` is present.
