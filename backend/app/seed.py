@@ -160,6 +160,7 @@ def run_expanded():
         ("elena@apex.test", 3.5, "I use AI tools to generate SQL queries and regexes.", []),
         ("david@apex.test", 3.0, "I use AI for debugging error stack traces occasionally.", []),
         ("chloe@apex.test", 2.5, "I tried ChatGPT once to draft docstrings but haven't used it regularly.", ["policy_unaware"]),
+        ("jason@apex.test", 4.0, "We use AI code completion across our backend with mandatory peer reviews.", []),
     ]:
         answer(email, apex, "common-freq", "Daily", 4)
         answer(email, apex, "common-open", text, score, "Assessed open response", flags)
