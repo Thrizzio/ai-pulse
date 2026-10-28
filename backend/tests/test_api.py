@@ -95,3 +95,21 @@ def test_dashboard_uses_shared_maturity_level(client):
     # Proves dashboard uses utils.maturity_level and level_for is removed.
     import app.routes.dashboard as dash_mod
     assert not hasattr(dash_mod, "level_for")
+
+
+def test_delete_my_report_scoped_to_caller(client):
+    # Proves DELETE /reports/me deletes caller responses without affecting other users.
+    headers_priya, _ = login(client, "priya@northwind.test", "Northwind Logistics")
+    headers_vikram, _ = login(client, "vikram@northwind.test", "Northwind Logistics")
+
+    del_res = client.delete("/reports/me", headers=headers_priya)
+    assert del_res.status_code == 200
+
+    rep_priya = client.get("/reports/me", headers=headers_priya).json()
+    assert rep_priya["answered"] == 0
+    assert rep_priya["average_score"] is None
+    assert rep_priya["level"] == "Not assessed"
+
+    rep_vikram = client.get("/reports/me", headers=headers_vikram).json()
+    assert rep_vikram["answered"] == 2
+    assert rep_vikram["average_score"] == 4.0

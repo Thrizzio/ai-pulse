@@ -527,3 +527,39 @@ def test_admin_cannot_see_other_org(client):
 3. **Attempt to fetch organization 2 (Bluepeak Retail) dashboard:**
    - Call `GET /dashboard?org_id=2` with `Authorization: Bearer <scoped_token>`.
    - *Expected result:* HTTP 403 Forbidden `{"detail": "Cannot view another organization's dashboard"}`.
+
+
+## Change 10: Employee Self-Service Data Deletion (DELETE /reports/me)
+
+### Problem in One Line
+Employees had no way to exercise their right to delete their diagnostic responses and generated report data as mandated by GDPR/privacy regulations and the client's pilot requirements.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/reports.py`
+**Before:**
+*Endpoint did not exist (`DELETE /reports/me` returned 405 Method Not Allowed).*
+
+**After:**
+```python
+@router.delete("/me")
+def delete_my_report(m: models.Membership = Depends(current_membership), db: Session = Depends(get_db)):
+    deleted = db.query(models.Response).filter_by(membership_id=m.id).delete()
+    db.commit()
+    return {"status": "deleted", "deleted_responses": deleted}
+```
+
+### Manual Verification Steps
+1. **Sign in as Priya (`priya@northwind.test`, Support employee at Northwind Logistics):**
+   - Call `POST /auth/login` with `{"email": "priya@northwind.test", "password": "pulse123"}` $\rightarrow$ copy token.
+2. **Select organization 1 (Northwind Logistics):**
+   - Call `POST /auth/select-org` with `{"org_id": 1}` and `Authorization: Bearer <token>` $\rightarrow$ copy scoped token.
+3. **Verify initial report state:**
+   - Call `GET /reports/me` $\rightarrow$ shows `answered: 2`.
+4. **Delete report data:**
+   - Call `DELETE /reports/me` with `Authorization: Bearer <scoped_token>`.
+   - *Expected result:* HTTP 200 OK `{"status": "deleted", "deleted_responses": 2}`.
+5. **Verify report is reset:**
+   - Call `GET /reports/me` with `Authorization: Bearer <scoped_token>`.
+   - *Expected result:* `answered: 0`, `average_score: null`, `level: "Not assessed"`, `risks: []`.
+   - Verify other employees' data (e.g. Vikram) remains intact.
