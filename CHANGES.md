@@ -207,3 +207,79 @@ def select_org(body: SelectOrgIn, user: models.User = Depends(current_user), db:
    - Call `POST /auth/select-org` with `{"org_id": 1}` $\rightarrow$ HTTP 200 OK.
    - Call `POST /auth/select-org` with `{"org_id": 2}` $\rightarrow$ HTTP 200 OK.
    - Call `POST /auth/select-org` with `{"org_id": 999}` $\rightarrow$ HTTP 403 Forbidden.
+
+
+## Change 4: Server-Side Submission Validation in /diagnostic/submit
+
+### Problem in One Line
+The `/diagnostic/submit` endpoint accepted empty lists, partial submissions, blank answers, or short text, awarding scores without validating role requirements.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/diagnostic.py`
+**Before:**
+```python
+@router.post("/submit")
+def submit(body: SubmitIn, m: models.Membership = Depends(current_membership), db: Session = Depends(get_db)):
+    bank = {q["id"]: q for q in load_questions()}
+    for a in body.answers:
+        q = bank.get(a.question_id)
+        if not q:
+            raise HTTPException(400, f"Unknown question {a.question_id}")
+        resp = models.Response(membership_id=m.id, question_id=q["id"], answer=a.answer)
+        if q["type"] == "mcq":
+            option = next((o for o in q["options"] if o["text"] == a.answer), None)
+            if option is None:
+                raise HTTPException(400, f"Invalid option for {q['id']}")
+            resp.score = option["points"]
+```
+
+**After:**
+```python
+@router.post("/submit")
+def submit(body: SubmitIn, m: models.Membership = Depends(current_membership), db: Session = Depends(get_db)):
+    expected = questions_for(m.job_role, m.seniority)
+    expected_map = {q["id"]: q for q in expected}
+
+    submitted_ids = [a.question_id for a in body.answers]
+    if len(submitted_ids) != len(expected_map) or set(submitted_ids) != set(expected_map.keys()):
+        raise HTTPException(422, "All questions assigned to your role must be answered")
+
+    for a in body.answers:
+        q = expected_map[a.question_id]
+        val = (a.answer or "").strip()
+        if not val:
+            raise HTTPException(422, f"Answer for '{q['id']}' cannot be blank")
+        if q["type"] == "open" and len(val) < 10:
+            raise HTTPException(422, f"Answer for '{q['id']}' must be at least 10 characters")
+        if q["type"] == "mcq":
+            option = next((o for o in q["options"] if o["text"] == a.answer), None)
+            if option is None:
+                raise HTTPException(422, f"Invalid option for {q['id']}")
+
+    bank = expected_map
+    for a in body.answers:
+        q = bank.get(a.question_id)
+        resp = models.Response(membership_id=m.id, question_id=q["id"], answer=a.answer.strip())
+        ...
+```
+
+### Manual Verification Steps
+1. **Sign in as Priya & select Northwind (`org_id: 1`):**
+   - Call `POST /auth/login` with `{"email": "priya@northwind.test", "password": "pulse123"}` $\rightarrow$ copy token.
+   - Call `POST /auth/select-org` with `{"org_id": 1}` $\rightarrow$ copy scoped token.
+2. **Submit empty list of answers:**
+   - POST `/diagnostic/submit` with `{"answers": []}` and `Authorization: Bearer <token>`.
+   - *Before fix:* HTTP 200 OK `{"saved": 0}`.
+   - *After fix:* HTTP 422 Unprocessable Entity `{"detail": "All questions assigned to your role must be answered"}`.
+3. **Submit missing question (1 answer instead of all 6 for Support):**
+   - POST `/diagnostic/submit` with `{"answers": [{"question_id": "common-freq", "answer": "Daily"}]}`.
+   - *Before fix:* HTTP 200 OK `{"saved": 1}`.
+   - *After fix:* HTTP 422 Unprocessable Entity `{"detail": "All questions assigned to your role must be answered"}`.
+4. **Submit with blank or too-short open answer:**
+   - POST `/diagnostic/submit` with all 6 questions, but `"common-open"` has answer `"short"`.
+   - *Before fix:* HTTP 200 OK `{"saved": 6}`.
+   - *After fix:* HTTP 422 Unprocessable Entity `{"detail": "Answer for 'common-open' must be at least 10 characters"}`.
+5. **Submit complete and valid answers to all 6 assigned questions:**
+   - POST `/diagnostic/submit` with valid answers to all 6 assigned questions.
+   - *Expected result:* HTTP 200 OK `{"saved": 6}`.

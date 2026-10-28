@@ -44,3 +44,11 @@ def test_select_org_rejects_non_member(client):
     headers, _ = login(client, "priya@northwind.test")
     r = client.post("/auth/select-org", json={"org_id": 2}, headers=headers)
     assert r.status_code == 403
+
+
+def test_submit_validation(client):
+    # Proves /diagnostic/submit returns 422 on empty submissions, missing questions, and blank answers.
+    headers, _ = login(client, "priya@northwind.test", "Northwind Logistics")
+    assert client.post("/diagnostic/submit", json={"answers": []}, headers=headers).status_code == 422
+    assert client.post("/diagnostic/submit", json={"answers": [{"question_id": "common-freq", "answer": "Daily"}]}, headers=headers).status_code == 422
+    assert client.post("/diagnostic/submit", json={"answers": [{"question_id": "common-open", "answer": ""}]}, headers=headers).status_code == 422
