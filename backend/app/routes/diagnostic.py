@@ -66,7 +66,10 @@ def submit(body: SubmitIn, m: models.Membership = Depends(current_membership), d
                 raise HTTPException(400, f"Invalid option for {q['id']}")
             resp.score = option["points"]
         else:
-            result = score_open_answer(q["text"], a.answer.strip())
+            try:
+                result = score_open_answer(q["text"], a.answer.strip())
+            except RuntimeError as err:
+                raise HTTPException(503, str(err))
             resp.score = result["score"]
             resp.reason = result["reason"]
             resp.flags = result["flags"]

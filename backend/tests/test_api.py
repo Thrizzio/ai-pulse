@@ -113,3 +113,22 @@ def test_delete_my_report_scoped_to_caller(client):
     rep_vikram = client.get("/reports/me", headers=headers_vikram).json()
     assert rep_vikram["answered"] == 2
     assert rep_vikram["average_score"] == 4.0
+
+
+def test_ai_scoring_hardening_and_prompt_isolation(client):
+    # Proves LLM parsing handles code fences, clamps score, whitelists flags, and reports source.
+    from app.services.scoring import score_open_answer
+    import app.services.llm as llm_service
+
+    orig_score_answer = llm_service.score_answer
+    try:
+        llm_service.score_answer = lambda q, a: (
+            "```json\n{\"score\": 99, \"reason\": \"Out of bounds\", \"flags\": [\"customer_data_shared\", \"fake_flag\"]}\n```",
+            "mock",
+        )
+        res = score_open_answer("test question", "my answer")
+        assert res["score"] == 5.0
+        assert res["flags"] == ["customer_data_shared"]
+        assert res["source"] == "mock"
+    finally:
+        llm_service.score_answer = orig_score_answer

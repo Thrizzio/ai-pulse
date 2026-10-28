@@ -5,6 +5,7 @@ from ..db import get_db
 from .. import models
 from ..auth import current_membership
 from ..utils import maturity_level
+from ..config import AI_MODE
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -30,8 +31,8 @@ def my_report(m: models.Membership = Depends(current_membership), db: Session = 
         "level": maturity_level(avg),
         "risks": flags,
         "next_steps": NEXT_STEPS.get(m.job_role, NEXT_STEPS["manager"]),
+        "source": "mock" if AI_MODE == "mock" else "ai",
     }
-
 
 
 @router.delete("/me")
