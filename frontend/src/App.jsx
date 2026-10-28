@@ -11,6 +11,7 @@ export default function App() {
   const [step, setStep] = useState("login");
   const [session, setSession] = useState(null);
   const [org, setOrg] = useState(null);
+  const [selectedDept, setSelectedDept] = useState(null);
 
   useEffect(() => {
     // Read persistent session from localStorage on mount
@@ -18,6 +19,13 @@ export default function App() {
     const savedSession = localStorage.getItem("session");
     const savedOrg = localStorage.getItem("active_org");
     const savedStep = localStorage.getItem("step");
+    const savedDept = localStorage.getItem("selected_dept");
+
+    if (savedDept) {
+      try {
+        setSelectedDept(JSON.parse(savedDept));
+      } catch (e) {}
+    }
 
     if (savedToken && savedSession) {
       try {
@@ -42,10 +50,10 @@ export default function App() {
     setStep("org");
   }
 
-  function handlePickOrg(o) {
+  function handlePickOrg(o, targetStep) {
     setOrg(o);
     localStorage.setItem("active_org", JSON.stringify(o));
-    const nextStep = o.role === "admin" ? "dashboard" : "diagnostic";
+    const nextStep = targetStep || (o.role === "admin" ? "dashboard" : "diagnostic");
     setStep(nextStep);
     localStorage.setItem("step", nextStep);
   }
@@ -54,13 +62,16 @@ export default function App() {
     localStorage.clear();
     setSession(null);
     setOrg(null);
+    setSelectedDept(null);
     setStep("login");
   }
 
   function goBackToOrgs() {
     localStorage.removeItem("active_org");
     localStorage.removeItem("step");
+    localStorage.removeItem("selected_dept");
     setOrg(null);
+    setSelectedDept(null);
     setStep("org");
   }
 
@@ -91,11 +102,13 @@ export default function App() {
         <OrgPicker orgs={session.organizations} onPick={handlePickOrg} />
       )}
       {step === "diagnostic" && (
-        <Diagnostic onDone={() => { setStep("report"); localStorage.setItem("step", "report"); }} />
+        <Diagnostic
+          onDone={() => { setStep("report"); localStorage.setItem("step", "report"); }}
+          onBack={goBackToOrgs}
+        />
       )}
       {step === "report" && (
         <Report
-          onRetake={() => { setStep("diagnostic"); localStorage.setItem("step", "diagnostic"); }}
           onBack={goBackToOrgs}
         />
       )}
@@ -103,13 +116,24 @@ export default function App() {
         <Dashboard
           org={org}
           onBack={goBackToOrgs}
-          onViewInsights={() => { setStep("insights"); localStorage.setItem("step", "insights"); }}
+          onViewInsights={(dept) => {
+            setSelectedDept(dept);
+            localStorage.setItem("selected_dept", JSON.stringify(dept));
+            setStep("insights");
+            localStorage.setItem("step", "insights");
+          }}
         />
       )}
       {step === "insights" && (
         <Insights
           org={org}
-          onBack={() => { setStep("dashboard"); localStorage.setItem("step", "dashboard"); }}
+          department={selectedDept}
+          onBack={() => {
+            setSelectedDept(null);
+            localStorage.removeItem("selected_dept");
+            setStep("dashboard");
+            localStorage.setItem("step", "dashboard");
+          }}
         />
       )}
     </div>

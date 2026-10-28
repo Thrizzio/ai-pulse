@@ -40,7 +40,6 @@ export default function Report({ onRetake, onBack }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2>{report.name}: {report.level}</h2>
         <div>
-          {onRetake && <button onClick={onRetake} style={{ marginRight: "8px" }}>Retake Diagnostic</button>}
           {onBack && <button onClick={onBack} style={{ background: "#666" }}>Back</button>}
         </div>
       </div>
