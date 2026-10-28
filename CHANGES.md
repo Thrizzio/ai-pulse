@@ -783,3 +783,211 @@ Modularized into:
 3. **Verify in App / Browser:**
    - Log in as `alex@apex.test` (password: `pulse123`) to view Apex Global's executive dashboard with departments having 5+ respondents.
    - Log in as `marcus@apex.test` to test multi-org switching between Apex Global and Crestline Health.
+
+## Change 14: Backend K-Anonymity (k=5) for Executive Dashboard & Privacy Protection
+
+### Problem in One Line
+Executive dashboards previously reported aggregate metrics and risk flags for departments regardless of sample size, allowing executives in small departments or teams with few respondents to de-anonymize individual employees and infer specific employee answers and risk violations.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/dashboard.py`
+**Before:**
+```python
+    for dept in org.departments:
+        dept_members = [x for x in members if x.department_id == dept.id]
+        respondent_averages = []
+        responded = 0
+        for dm in dept_members:
+            rows = db.query(models.Response).filter_by(membership_id=dm.id).all()
+            user_scores = [r.score for r in rows if r.score is not None]
+            if user_scores:
+                respondent_averages.append(sum(user_scores) / len(user_scores))
+            if rows:
+                responded += 1
+            for r in rows:
+                for f in r.flags or []:
+                    all_flags[f] = all_flags.get(f, 0) + 1
+        avg = sum(respondent_averages) / len(respondent_averages) if respondent_averages else None
+        departments.append({
+            "department": dept.name,
+            "employees": len(dept_members),
+            "responded": responded,
+            "average_score": round(avg, 2) if avg is not None else None,
+            "level": maturity_level(avg),
+        })
+
+    return {
+        "organization": org.name,
+        "departments": departments,
+        "top_risks": sorted(all_flags.items(), key=lambda kv: -kv[1])[:5],
+    }
+```
+
+**After:**
+```python
+    for dept in org.departments:
+        dept_members = [x for x in members if x.department_id == dept.id]
+        completed_member_averages = []
+        dept_flags = []
+
+        for dm in dept_members:
+            rows = db.query(models.Response).filter_by(membership_id=dm.id).all()
+            if not rows:
+                continue
+
+            # A completed diagnostic requires answering every question assigned to the member's role
+            assigned_questions = questions_for(dm.job_role, dm.seniority)
+            assigned_ids = {q["id"] for q in assigned_questions}
+            answered_ids = {r.question_id for r in rows if r.answer and r.answer.strip()}
+
+            is_completed = bool(assigned_ids and assigned_ids.issubset(answered_ids))
+
+            if is_completed:
+                user_scores = [r.score for r in rows if r.score is not None]
+                if user_scores:
+                    completed_member_averages.append(sum(user_scores) / len(user_scores))
+                for r in rows:
+                    for f in r.flags or []:
+                        dept_flags.append(f)
+
+        distinct_completed_count = len(completed_member_averages)
+
+        if distinct_completed_count >= 5:
+            dept_avg = sum(completed_member_averages) / distinct_completed_count if distinct_completed_count else None
+            departments.append({
+                "department": dept.name,
+                "employees": len(dept_members),
+                "responded": distinct_completed_count,
+                "average_score": round(dept_avg, 2) if dept_avg is not None else None,
+                "level": maturity_level(dept_avg),
+            })
+            for f in dept_flags:
+                visible_flags[f] = visible_flags.get(f, 0) + 1
+        else:
+            has_suppressed_departments = True
+            other_teams_employees += len(dept_members)
+            other_teams_member_averages.extend(completed_member_averages)
+            other_teams_flags.extend(dept_flags)
+
+    # Aggregate for Other teams
+    other_completed_count = len(other_teams_member_averages)
+    if other_completed_count >= 5:
+        other_avg = sum(other_teams_member_averages) / other_completed_count
+        departments.append({
+            "department": "Other teams",
+            "employees": other_teams_employees,
+            "responded": other_completed_count,
+            "average_score": round(other_avg, 2),
+            "level": maturity_level(other_avg),
+        })
+        for f in other_teams_flags:
+            visible_flags[f] = visible_flags.get(f, 0) + 1
+        hidden_small_groups = False
+    else:
+        hidden_small_groups = has_suppressed_departments
+
+    return {
+        "organization": org.name,
+        "departments": departments,
+        "top_risks": sorted(visible_flags.items(), key=lambda kv: -kv[1])[:5],
+        "hidden_small_groups": hidden_small_groups,
+    }
+```
+
+### Manual Verification Steps
+1. **Sign in as Admin Asha (`asha@northwind.test`) on standard pilot dataset:**
+   - Log in and select Northwind Logistics (`org_id: 1`).
+   - Call `GET /dashboard`.
+   - *Before fix:* Displayed all 4 departments (Sales with 1 respondent, Support with 1 respondent, Engineering with 0, HR with 0), exposing individual scores and flags for Vikram and Priya.
+   - *After fix:* `departments` returns `[]` and `hidden_small_groups: true` because no department has $\ge 5$ completed members and the aggregate (2 respondents) is $< 5$. UI displays: "Note: One or more departments with fewer than 5 completed diagnostics are hidden to protect employee anonymity."
+2. **Sign in as Admin Alex (`alex@apex.test`) on expanded enterprise dataset:**
+   - Run `python -m app.seed --expanded`.
+   - Log in and select Apex Global (`org_id: 1`).
+   - Call `GET /dashboard`.
+   - *Result:* Engineering (6 completed respondents) and Product (5 completed respondents) appear individually in the table. Customer Success (2 completed respondents) is suppressed from appearing individually.
+3. **Verify Suppression of Small Team Flags in `top_risks`:**
+   - Notice Customer Success at Apex has flags (`customer_data_shared`, `confidential_data_shared`).
+   - Because Customer Success is $< 5$ and Other Teams has only 2 respondents ($< 5$), `confidential_data_shared` is completely excluded from `top_risks`.
+4. **Verify Aggregation when Small Teams Reach $\ge 5$:**
+   - In a multi-department organization where multiple small departments each have 2-3 completed members summing to $\ge 5$, individual departments are omitted and a single consolidated `"Other teams"` row is rendered with aggregate headcount, completed respondents, and average score, setting `hidden_small_groups: false`.
+
+## Change 15: Department Insights Page & Privacy-Preserving Actionable Recommendations
+
+### Problem in One Line
+Administrators had no dedicated interface or analytical feature to translate aggregate diagnostic risk patterns into concrete organizational actions, and existing diagnostic responses could not be fed directly to external models without violating strict employee data privacy and anonymity boundaries.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/insights.py`
+**Before:**
+*Endpoint did not exist (`GET /insights` returned 404 Not Found).*
+
+**After:**
+```python
+@router.get("")
+def get_insights(
+    org_id: int | None = None,
+    m: models.Membership = Depends(current_membership),
+    db: Session = Depends(get_db),
+):
+    if m.role != "admin":
+        raise HTTPException(403, "Admins only")
+    if org_id is not None and org_id != m.org_id:
+        raise HTTPException(403, "Cannot view another organization's insights")
+
+    agg = compute_dashboard_aggregates(db, m.org_id)
+    visible_departments = agg.get("departments", [])
+    res = insights_service.generate_insights(visible_departments)
+
+    return {
+        "organization": agg["organization"],
+        "insights": res["insights"],
+        "source": res["source"],
+        "hidden_small_groups": agg["hidden_small_groups"],
+    }
+```
+
+#### `backend/app/services/insights_service.py`
+**Before:**
+*No service existed to convert approved department aggregates into structured recommendations with schema validation and fallback protections.*
+
+**After:**
+```python
+def generate_insights(visible_departments: list[dict]) -> dict:
+    if not visible_departments:
+        return {"insights": [], "source": "rules"}
+    if AI_MODE != "live" or not LLM_API_KEY or not LLM_API_URL:
+        return {
+            "insights": generate_rule_based_insights(visible_departments),
+            "source": "rules",
+        }
+    ...
+    # Validates pattern, action, reason, and priority in {"high", "medium", "low"}
+    # Gracefully falls back to generate_rule_based_insights on timeouts/errors
+```
+
+#### `frontend/src/pages/Insights.jsx` & `frontend/src/pages/Dashboard.jsx`
+**Before:**
+*Dashboard only showed the raw metrics table with no path to actionable guidance.*
+
+**After:**
+*Added a "Department Insights" button on the dashboard that navigates to a dedicated Insights page, grouping concrete recommendations by visible department with priority badges, empty state, and back navigation.*
+
+### Manual Verification Steps
+1. **Sign in as Admin on small dataset (Northwind Logistics):**
+   - Log in as `asha@northwind.test` and navigate to the Dashboard.
+   - Click **Department Insights**.
+   - *Expected result:* Renders empty state indicating no eligible insights are available because all departments have $< 5$ respondents, preserving $k$-anonymity.
+2. **Sign in as Admin on enterprise dataset (Apex Global):**
+   - Run `python -m app.seed --expanded`.
+   - Log in as `alex@apex.test` and click **Department Insights**.
+   - *Expected result:* Displays actionable recommendations grouped under `Engineering` (e.g. peer review checklists for `unreviewed_output`) and `Product` (e.g. client data masking guidelines for `customer_data_shared`) with priority badges (`high`, `medium`).
+3. **Verify Suppressed Departments are Excluded:**
+   - On Apex Global, verify that Customer Success (2 completed respondents) does NOT appear in the Insights page and its confidential data risk is never surfaced.
+4. **Verify Non-Admin Access Denial:**
+   - Attempt to call `GET /insights` with an employee token (e.g., `priya@northwind.test`).
+   - *Expected result:* HTTP 403 Forbidden (`{"detail": "Admins only"}`).
+5. **Verify LLM Fallback Safety:**
+   - Test with `AI_MODE=mock` or invalid LLM configuration.
+   - *Expected result:* Returns HTTP 200 with deterministic rule-based insights, labeled with `source: "rules"`, without crashing or fabricating findings.

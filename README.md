@@ -56,3 +56,25 @@ python -m pytest
 `AI_MODE=mock` (default) returns canned model responses from `backend/data/mock_ai_responses.json`. Like a real model, they are not always well-formed.
 
 `AI_MODE=live` calls `LLM_API_URL` with `LLM_API_KEY` and `LLM_MODEL`.
+
+
+
+
+
+
+
+Deliberately left:-
+Creating organizations and departments through the app (a vendor-side provisioning step for the pilot)
+Inviting users, onboarding, and email verification
+Self-service password reset
+SSO/SAML and MFA
+Proper password hashing, unless you have spare time (the seed accounts use unsalted SHA-256; worth one line in the README as a known risk)
+Database migrations and Postgres
+
+questions to the cleint
+Should there be a time limit within which an employee can delete the report , so maybe after 3 days he cant?
+Can an employee repeatedly give the test over and over , in that case should we use the employees latest data or somehting else
+
+
+
+Changes i made.
