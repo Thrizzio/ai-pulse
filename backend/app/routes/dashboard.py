@@ -38,18 +38,19 @@ def org_dashboard(org_id: int | None = None, m: models.Membership = Depends(curr
     all_flags = {}
     for dept in org.departments:
         dept_members = [x for x in members if x.department_id == dept.id]
-        scores = []
+        respondent_averages = []
         responded = 0
         for dm in dept_members:
             rows = db.query(models.Response).filter_by(membership_id=dm.id).all()
+            user_scores = [r.score for r in rows if r.score is not None]
+            if user_scores:
+                respondent_averages.append(sum(user_scores) / len(user_scores))
             if rows:
                 responded += 1
             for r in rows:
-                if r.score is not None:
-                    scores.append(r.score)
                 for f in r.flags or []:
                     all_flags[f] = all_flags.get(f, 0) + 1
-        avg = sum(scores) / len(dept_members) if dept_members else None
+        avg = sum(respondent_averages) / len(respondent_averages) if respondent_averages else None
         departments.append({
             "department": dept.name,
             "employees": len(dept_members),

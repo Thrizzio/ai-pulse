@@ -392,3 +392,59 @@ def questions_for(job_role: str, seniority: str):
    - Log in as a lead manager user or test `questions_for("manager", "lead")`.
    - *Before fix:* `mgr-policy` was missing.
    - *After fix:* `mgr-policy` is present.
+
+
+## Change 7: Department Score Math (Per-Respondent Average & Unassessed Handling)
+
+### Problem in One Line
+Department scores summed raw question scores across all department members and divided by total employee headcount, diluting respondent scores with non-respondents and reporting `0.0` / `"Beginner"` instead of `"Not assessed"` for departments with zero respondents.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/dashboard.py`
+**Before:**
+```python
+        scores = []
+        responded = 0
+        for dm in dept_members:
+            rows = db.query(models.Response).filter_by(membership_id=dm.id).all()
+            if rows:
+                responded += 1
+            for r in rows:
+                if r.score is not None:
+                    scores.append(r.score)
+                for f in r.flags or []:
+                    all_flags[f] = all_flags.get(f, 0) + 1
+        avg = sum(scores) / len(dept_members) if dept_members else None
+```
+
+**After:**
+```python
+        respondent_averages = []
+        responded = 0
+        for dm in dept_members:
+            rows = db.query(models.Response).filter_by(membership_id=dm.id).all()
+            user_scores = [r.score for r in rows if r.score is not None]
+            if user_scores:
+                respondent_averages.append(sum(user_scores) / len(user_scores))
+            if rows:
+                responded += 1
+            for r in rows:
+                for f in r.flags or []:
+                    all_flags[f] = all_flags.get(f, 0) + 1
+        avg = sum(respondent_averages) / len(respondent_averages) if respondent_averages else None
+```
+
+### Manual Verification Steps
+1. **Sign in as Admin Asha (`asha@northwind.test`, admin at Northwind Logistics):**
+   - Call `POST /auth/login` with `{"email": "asha@northwind.test", "password": "pulse123"}` $\rightarrow$ copy token.
+2. **Select organization 1 (Northwind Logistics):**
+   - Call `POST /auth/select-org` with `{"org_id": 1}` and `Authorization: Bearer <token>` $\rightarrow$ copy scoped token.
+3. **Fetch department analytics via `GET /dashboard`:**
+   - Call `GET /dashboard` with `Authorization: Bearer <scoped_token>`.
+4. **Verify assessed department score (Sales):**
+   - *Before fix:* Sales showed `average_score: 2.67` because respondent Vikram's scores (4 and 4) were divided by the total department headcount (3 employees).
+   - *After fix:* Sales shows `average_score: 4.0` because Vikram's average (4.0) is averaged only across active respondents (1 respondent).
+5. **Verify unassessed department status (Engineering & HR):**
+   - *Before fix:* Engineering and HR showed `average_score: 0.0` and `level: "Beginner"`.
+   - *After fix:* Engineering and HR show `average_score: null` and `level: "Not assessed"`.

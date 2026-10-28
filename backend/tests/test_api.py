@@ -78,3 +78,14 @@ def test_lead_employee_sees_senior_questions(client):
     assert r.status_code == 200
     q_ids = {q["id"] for q in r.json()}
     assert "eng-review" in q_ids and "eng-arch" in q_ids
+
+
+def test_department_score_math(client):
+    # Proves department average computes across respondents only and unassessed departments show 'Not assessed'.
+    headers, _ = login(client, "asha@northwind.test", "Northwind Logistics")
+    r = client.get("/dashboard", headers=headers)
+    assert r.status_code == 200
+    depts = {d["department"]: d for d in r.json()["departments"]}
+    assert depts["Sales"]["average_score"] == 4.0
+    assert depts["Engineering"]["average_score"] is None
+    assert depts["Engineering"]["level"] == "Not assessed"
