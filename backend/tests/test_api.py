@@ -19,7 +19,8 @@ def test_admin_dashboard(client):
     org_id = data["organizations"][0]["org_id"]
     r = client.get(f"/dashboard?org_id={org_id}", headers=headers)
     assert r.status_code == 200
-    assert len(r.json()["departments"]) == 4
+    assert r.json()["departments"] == []
+    assert r.json()["hidden_small_groups"] is True
 
 
 def test_admin_cannot_see_other_org(client):
@@ -81,14 +82,20 @@ def test_lead_employee_sees_senior_questions(client):
 
 
 def test_department_score_math(client):
-    # Proves department average computes across respondents only and unassessed departments show 'Not assessed'.
-    headers, _ = login(client, "asha@northwind.test", "Northwind Logistics")
-    r = client.get("/dashboard", headers=headers)
-    assert r.status_code == 200
-    depts = {d["department"]: d for d in r.json()["departments"]}
-    assert depts["Sales"]["average_score"] == 4.0
-    assert depts["Engineering"]["average_score"] is None
-    assert depts["Engineering"]["level"] == "Not assessed"
+    # Proves department average computes across respondents only for qualified departments (k >= 5).
+    from app import seed
+    seed.run(expanded=True)
+    try:
+        headers, _ = login(client, "alex@apex.test", "Apex Global")
+        r = client.get("/dashboard", headers=headers)
+        assert r.status_code == 200
+        depts = {d["department"]: d for d in r.json()["departments"]}
+        assert "Engineering" in depts
+        assert depts["Engineering"]["responded"] == 6
+        assert "Product" in depts
+        assert depts["Product"]["responded"] == 5
+    finally:
+        seed.run(expanded=False)
 
 
 def test_dashboard_uses_shared_maturity_level(client):

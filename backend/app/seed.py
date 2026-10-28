@@ -11,6 +11,7 @@ from .db import Base, engine, SessionLocal
 from . import models
 from .auth import hash_password
 from .config import EXPANDED_SEED
+from .services.questions import questions_for
 
 PEOPLE_NORTHWIND = [
     # name, email, department, role, job_role, seniority
@@ -103,33 +104,34 @@ def run_standard():
     """Seeds the standard pilot dataset (Northwind Logistics & Bluepeak Retail)."""
     _reset_database()
     db = SessionLocal()
+    try:
+        nw, nw_depts = _make_org(db, "Northwind Logistics", ["Sales", "Support", "Engineering", "HR"])
+        bp, bp_depts = _make_org(db, "Bluepeak Retail", ["Stores", "Customer Care"])
 
-    nw, nw_depts = _make_org(db, "Northwind Logistics", ["Sales", "Support", "Engineering", "HR"])
-    bp, bp_depts = _make_org(db, "Bluepeak Retail", ["Stores", "Customer Care"])
+        users = {}
+        _add_people(db, users, nw, nw_depts, PEOPLE_NORTHWIND)
+        _add_people(db, users, bp, bp_depts, PEOPLE_BLUEPEAK)
 
-    users = {}
-    _add_people(db, users, nw, nw_depts, PEOPLE_NORTHWIND)
-    _add_people(db, users, bp, bp_depts, PEOPLE_BLUEPEAK)
+        # Consultant who works with both companies
+        _add_people(db, users, nw, nw_depts, [("Ravi Kapoor", "ravi@consult.test", "HR", "employee", "manager", "senior")])
+        _add_people(db, users, bp, bp_depts, [("Ravi Kapoor", "ravi@consult.test", None, "admin", "manager", "senior")])
+        db.flush()
 
-    # Consultant who works with both companies
-    _add_people(db, users, nw, nw_depts, [("Ravi Kapoor", "ravi@consult.test", "HR", "employee", "manager", "senior")])
-    _add_people(db, users, bp, bp_depts, [("Ravi Kapoor", "ravi@consult.test", None, "admin", "manager", "senior")])
-    db.flush()
+        def answer(email, org, qid, text, score, reason=None, flags=None):
+            m = db.query(models.Membership).filter_by(user_id=users[email].id, org_id=org.id).first()
+            db.add(models.Response(membership_id=m.id, question_id=qid, answer=text, score=score, reason=reason, flags=flags or []))
 
-    def answer(email, org, qid, text, score, reason=None, flags=None):
-        m = db.query(models.Membership).filter_by(user_id=users[email].id, org_id=org.id).first()
-        db.add(models.Response(membership_id=m.id, question_id=qid, answer=text, score=score, reason=reason, flags=flags or []))
+        answer("vikram@northwind.test", nw, "common-freq", "Daily", 4)
+        answer("vikram@northwind.test", nw, "common-open", "Used ChatGPT to draft 20 follow-up emails and edited each one.", 4, "Regular use with editing.", [])
+        answer("priya@northwind.test", nw, "common-freq", "A few times a month", 2)
+        answer("priya@northwind.test", nw, "common-open", "Pasted a customer's complaint thread into ChatGPT to summarise it.", 3, "Useful summary but shared customer data.", ["customer_data_shared"])
+        answer("tom@bluepeak.test", bp, "common-freq", "A few times a week", 3)
+        answer("kabir@bluepeak.test", bp, "common-open", "Uploaded our full customer refund list to an AI tool to find patterns.", 3, "Good idea, unsafe data handling.", ["customer_data_shared", "confidential_data_shared"])
+        answer("kabir@bluepeak.test", bp, "common-freq", "Daily", 4)
 
-    answer("vikram@northwind.test", nw, "common-freq", "Daily", 4)
-    answer("vikram@northwind.test", nw, "common-open", "Used ChatGPT to draft 20 follow-up emails and edited each one.", 4, "Regular use with editing.", [])
-    answer("priya@northwind.test", nw, "common-freq", "A few times a month", 2)
-    answer("priya@northwind.test", nw, "common-open", "Pasted a customer's complaint thread into ChatGPT to summarise it.", 3, "Useful summary but shared customer data.", ["customer_data_shared"])
-    answer("tom@bluepeak.test", bp, "common-freq", "A few times a week", 3)
-    answer("kabir@bluepeak.test", bp, "common-open", "Uploaded our full customer refund list to an AI tool to find patterns.", 3, "Good idea, unsafe data handling.", ["customer_data_shared", "confidential_data_shared"])
-    answer("kabir@bluepeak.test", bp, "common-freq", "Daily", 4)
-
-    db.commit()
-    db.close()
+        db.commit()
+    finally:
+        db.close()
     print("Standard seed complete: Northwind Logistics & Bluepeak Retail created. Log in with password 'pulse123'.")
 
 
@@ -137,57 +139,69 @@ def run_expanded():
     """Seeds the expanded enterprise dataset (Apex Global & Crestline Health) with large teams."""
     _reset_database()
     db = SessionLocal()
+    try:
+        apex, apex_depts = _make_org(db, "Apex Global", ["Engineering", "Product", "Customer Success", "Legal & Compliance"])
+        crest, crest_depts = _make_org(db, "Crestline Health", ["Clinical Operations", "Research & Data", "Administration"])
 
-    apex, apex_depts = _make_org(db, "Apex Global", ["Engineering", "Product", "Customer Success", "Legal & Compliance"])
-    crest, crest_depts = _make_org(db, "Crestline Health", ["Clinical Operations", "Research & Data", "Administration"])
+        users = {}
+        _add_people(db, users, apex, apex_depts, PEOPLE_APEX)
+        _add_people(db, users, crest, crest_depts, PEOPLE_CRESTLINE)
 
-    users = {}
-    _add_people(db, users, apex, apex_depts, PEOPLE_APEX)
-    _add_people(db, users, crest, crest_depts, PEOPLE_CRESTLINE)
+        # Multi-org employee: Marcus Brody also advises Crestline Health
+        _add_people(db, users, crest, crest_depts, [("Marcus Brody", "marcus@apex.test", "Research & Data", "employee", "engineering", "senior")])
+        db.flush()
 
-    # Multi-org employee: Marcus Brody also advises Crestline Health
-    _add_people(db, users, crest, crest_depts, [("Marcus Brody", "marcus@apex.test", "Research & Data", "employee", "engineering", "senior")])
-    db.flush()
+        def answer(email, org, qid, text, score, reason=None, flags=None):
+            m = db.query(models.Membership).filter_by(user_id=users[email].id, org_id=org.id).first()
+            db.add(models.Response(membership_id=m.id, question_id=qid, answer=text, score=score, reason=reason, flags=flags or []))
 
-    def answer(email, org, qid, text, score, reason=None, flags=None):
-        m = db.query(models.Membership).filter_by(user_id=users[email].id, org_id=org.id).first()
-        db.add(models.Response(membership_id=m.id, question_id=qid, answer=text, score=score, reason=reason, flags=flags or []))
+        def complete_diagnostic(email, org, open_score, open_text, flags=None):
+            m = db.query(models.Membership).filter_by(user_id=users[email].id, org_id=org.id).first()
+            qs = questions_for(m.job_role, m.seniority)
+            for q in qs:
+                if q["type"] == "open":
+                    db.add(models.Response(
+                        membership_id=m.id, question_id=q["id"], answer=open_text,
+                        score=open_score, reason="Assessed open response", flags=flags or [],
+                    ))
+                else:
+                    db.add(models.Response(
+                        membership_id=m.id, question_id=q["id"], answer="Daily",
+                        score=4.0, flags=[],
+                    ))
 
-    # Engineering at Apex (5 completed members -> Engineering qualifies for k >= 5)
-    for email, score, text, flags in [
-        ("priyanka@apex.test", 4.5, "I use GitHub Copilot daily for unit tests and security reviews.", ["unreviewed_output"]),
-        ("marcus@apex.test", 4.0, "I use Claude for refactoring architecture blueprints and always verify outputs.", []),
-        ("elena@apex.test", 3.5, "I use AI tools to generate SQL queries and regexes.", []),
-        ("david@apex.test", 3.0, "I use AI for debugging error stack traces occasionally.", []),
-        ("chloe@apex.test", 2.5, "I tried ChatGPT once to draft docstrings but haven't used it regularly.", ["policy_unaware"]),
-        ("jason@apex.test", 4.0, "We use AI code completion across our backend with mandatory peer reviews.", []),
-    ]:
-        answer(email, apex, "common-freq", "Daily", 4)
-        answer(email, apex, "common-open", text, score, "Assessed open response", flags)
+        # Engineering at Apex (6 completed members -> Engineering qualifies for k >= 5)
+        for email, score, text, flags in [
+            ("priyanka@apex.test", 4.5, "I use GitHub Copilot daily for unit tests and security reviews.", ["unreviewed_output"]),
+            ("marcus@apex.test", 4.0, "I use Claude for refactoring architecture blueprints and always verify outputs.", []),
+            ("elena@apex.test", 3.5, "I use AI tools to generate SQL queries and regexes.", []),
+            ("david@apex.test", 3.0, "I use AI for debugging error stack traces occasionally.", []),
+            ("chloe@apex.test", 2.5, "I tried ChatGPT once to draft docstrings but haven't used it regularly.", ["policy_unaware"]),
+            ("jason@apex.test", 4.0, "We use AI code completion across our backend with mandatory peer reviews.", []),
+        ]:
+            complete_diagnostic(email, apex, score, text, flags)
 
-    # Product at Apex (5 completed members -> Product qualifies for k >= 5)
-    for email, score, text, flags in [
-        ("sam@apex.test", 4.5, "I draft user stories and PRDs using Claude, reviewing each section.", []),
-        ("rachel@apex.test", 4.0, "I summarize competitor release notes and customer interviews.", ["customer_data_shared"]),
-        ("jordan@apex.test", 3.0, "I brainstorm feature ideas and marketing copy.", []),
-        ("nina@apex.test", 5.0, "AI is embedded in our sprint planning and backlog grooming workflow.", []),
-        ("leo@apex.test", 3.5, "I use AI to write first drafts of product documentation.", []),
-    ]:
-        answer(email, apex, "common-freq", "Daily", 4)
-        answer(email, apex, "common-open", text, score, "Assessed open response", flags)
+        # Product at Apex (5 completed members -> Product qualifies for k >= 5)
+        for email, score, text, flags in [
+            ("sam@apex.test", 4.5, "I draft user stories and PRDs using Claude, reviewing each section.", []),
+            ("rachel@apex.test", 4.0, "I summarize competitor release notes and customer interviews.", ["customer_data_shared"]),
+            ("jordan@apex.test", 3.0, "I brainstorm feature ideas and marketing copy.", []),
+            ("nina@apex.test", 5.0, "AI is embedded in our sprint planning and backlog grooming workflow.", []),
+            ("leo@apex.test", 3.5, "I use AI to write first drafts of product documentation.", []),
+        ]:
+            complete_diagnostic(email, apex, score, text, flags)
 
-    # Customer Success at Apex (2 completed members -> small group < 5)
-    answer("tariq@apex.test", apex, "common-freq", "Daily", 4)
-    answer("tariq@apex.test", apex, "common-open", "I draft customer email responses and edit them before sending.", 3.5, "Regular use", ["customer_data_shared"])
-    answer("maya@apex.test", apex, "common-freq", "A few times a week", 3)
-    answer("maya@apex.test", apex, "common-open", "Pasted a client ticket to summarize customer sentiment.", 2.5, "Shared ticket data", ["customer_data_shared", "confidential_data_shared"])
+        # Customer Success at Apex (2 completed members -> small group < 5)
+        complete_diagnostic("tariq@apex.test", apex, 3.5, "I draft customer email responses and edit them before sending.", ["customer_data_shared"])
+        complete_diagnostic("maya@apex.test", apex, 2.5, "Pasted a client ticket to summarize customer sentiment.", ["customer_data_shared", "confidential_data_shared"])
 
-    # Crestline Health respondents
-    answer("dr.chen@crestline.test", crest, "common-freq", "A few times a week", 3)
-    answer("dr.patel@crestline.test", crest, "common-open", "Analyzing synthetic clinical trial datasets with local models.", 4.5, "Thoughtful use", [])
+        # Crestline Health respondents
+        answer("dr.chen@crestline.test", crest, "common-freq", "A few times a week", 3)
+        answer("dr.patel@crestline.test", crest, "common-open", "Analyzing synthetic clinical trial datasets with local models.", 4.5, "Thoughtful use", [])
 
-    db.commit()
-    db.close()
+        db.commit()
+    finally:
+        db.close()
     print("Expanded seed complete: Apex Global & Crestline Health created with 20+ employees. Log in with password 'pulse123'.")
 
 
