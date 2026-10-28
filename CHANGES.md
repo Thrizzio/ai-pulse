@@ -991,3 +991,600 @@ def generate_insights(visible_departments: list[dict]) -> dict:
 5. **Verify LLM Fallback Safety:**
    - Test with `AI_MODE=mock` or invalid LLM configuration.
    - *Expected result:* Returns HTTP 200 with deterministic rule-based insights, labeled with `source: "rules"`, without crashing or fabricating findings.
+
+## Change 16: Atomic Report Lifecycle & Unscored Respondent K-Anonymity Counting
+
+### Problem in One Line
+Diagnostic submission previously deleted old answers before scoring new ones (risking lost data on scoring failures), and department privacy counting coupled respondent eligibility to the presence of numeric scores, causing completed respondents with unscored questions to disappear from the $k$-anonymity headcount.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/diagnostic.py`
+**Before:**
+```python
+    db.query(models.Response).filter_by(membership_id=m.id).delete()
+    for a in body.answers:
+        ...
+        resp.score = result["score"]
+        db.add(resp)
+    db.commit()
+```
+
+**After:**
+```python
+    new_responses = []
+    for a in body.answers:
+        ...
+        new_responses.append(resp)
+
+    try:
+        db.query(models.Response).filter_by(membership_id=m.id).delete()
+        for r in new_responses:
+            db.add(r)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+```
+
+#### `backend/app/routes/dashboard.py`
+**Before:**
+```python
+            if is_completed:
+                user_scores = [r.score for r in rows if r.score is not None]
+                if user_scores:
+                    completed_member_averages.append(sum(user_scores) / len(user_scores))
+        distinct_completed_count = len(completed_member_averages)
+```
+
+**After:**
+```python
+            if is_completed:
+                completed_member_ids.add(dm.id)
+                user_scores = [r.score for r in rows if r.score is not None]
+                if user_scores:
+                    completed_member_averages.append(sum(user_scores) / len(user_scores))
+        distinct_completed_count = len(completed_member_ids)
+```
+
+### Manual Verification Steps
+1. **Verify atomic submission resilience:**
+   - Submit assessment answers where external scoring fails (HTTP 503).
+   - *Expected result:* HTTP 503 is returned and previously saved responses remain completely intact.
+2. **Verify completed unscored respondent counting:**
+   - 5 members complete diagnostic questions where questions produce null scores.
+   - *Expected result:* Department meets $k \ge 5$ threshold (`responded: 5`), displays `"Not assessed"`, and is not suppressed.
+
+## Change 17: Diagnostic Seed Completion and Department-Specific Scoped Insights
+
+### Problem in One Line
+Apex Global dashboard returned empty department and risk lists because seed assessments only contained 2 answers per employee instead of all role-assigned questions (failing completion checks and triggering k-anonymity suppression), and insights were previously aggregated globally rather than scoped to individual eligible departments.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/seed.py`
+**Before:**
+```python
+        # Seeded only 2 questions per respondent
+        answer("priyanka@apex.test", apex, "common-freq", "Daily", 4)
+        answer("priyanka@apex.test", apex, "common-open", "I use Copilot...", 4.5)
+```
+
+**After:**
+```python
+        # Seeds complete diagnostic assessments across all role-assigned questions
+        def complete_diagnostic(email, org, open_score, open_text, flags=None):
+            m = db.query(models.Membership).filter_by(user_id=users[email].id, org_id=org.id).first()
+            qs = questions_for(m.job_role, m.seniority)
+            for q in qs:
+                if q["type"] == "open":
+                    db.add(models.Response(membership_id=m.id, question_id=q["id"], answer=open_text, score=open_score, reason="Assessed open response", flags=flags or []))
+                else:
+                    db.add(models.Response(membership_id=m.id, question_id=q["id"], answer="Daily", score=4.0, flags=[]))
+```
+
+#### `backend/app/routes/dashboard.py`
+**Before:**
+```python
+            departments.append({
+                "department": dept.name,
+                "employees": len(dept_members),
+                "responded": distinct_completed_count,
+                ...
+            })
+```
+
+**After:**
+```python
+            departments.append({
+                "id": dept.id,
+                "department": dept.name,
+                "employees": len(dept_members),
+                "responded": distinct_completed_count,
+                ...
+            })
+```
+
+#### `backend/app/routes/insights.py`
+**Before:**
+```python
+@router.get("")
+def get_insights(org_id: int | None = None, ...):
+    agg = compute_dashboard_aggregates(db, m.org_id)
+    res = insights_service.generate_insights(agg.get("departments", []))
+```
+
+**After:**
+```python
+@router.get("")
+def get_insights(department_id: int | None = None, org_id: int | None = None, ...):
+    ...
+    if department_id is not None:
+        dept = db.get(models.Department, department_id)
+        if not dept:
+            raise HTTPException(404, "Department not found")
+        if dept.org_id != m.org_id:
+            raise HTTPException(403, "Cannot access department belonging to another organization")
+        target_dept = next((d for d in visible_departments if d.get("id") == department_id), None)
+        if not target_dept:
+            raise HTTPException(403, "Department is not eligible for insights or is suppressed for privacy")
+        res = insights_service.generate_insights([target_dept])
+        return {"organization": agg["organization"], "department_id": dept.id, "department": dept.name, "insights": res["insights"], ...}
+```
+
+#### `frontend/src/pages/Dashboard.jsx`
+**Before:**
+```jsx
+        <div>
+          {onViewInsights && <button onClick={onViewInsights}>Department Insights</button>}
+          {onBack && <button onClick={onBack}>Back</button>}
+        </div>
+```
+
+**After:**
+```jsx
+        <div>
+          {onBack && <button onClick={onBack}>Back</button>}
+        </div>
+        ...
+        <td style={{ padding: "8px" }}>
+          {d.id != null && onViewInsights && (
+            <button onClick={() => onViewInsights(d)}>Insights</button>
+          )}
+        </td>
+```
+
+### Manual Verification Steps
+1. **Verify Apex Global Dashboard displays eligible departments:**
+   - Log in as `alex@apex.test` (`pulse123`), select **Apex Global**.
+   - *Expected result before:* Dashboard displays `departments: []`, `top_risks: []`, and `hidden_small_groups: true`.
+   - *Expected result after:* Dashboard displays **Engineering** (6 responded, Practitioner) and **Product** (5 responded, Leader), top company risks, and a note that small groups are hidden.
+2. **Access Department Insights from table row:**
+   - On the Engineering row, click **Insights**.
+   - *Expected result:* Navigates to `Apex Global - Engineering Insights` showing metrics for Engineering and recommendations tailored to Engineering's flagged patterns (`unreviewed_output`, `policy_unaware`).
+3. **Verify Suppressed and Cross-Tenant Departments are blocked:**
+   - Make an API request to `GET /insights?department_id=3` (Customer Success, 2 completed respondents < 5).
+   - *Expected result:* HTTP 403 Forbidden with `"Department is not eligible for insights or is suppressed for privacy"`.
+   - Make an API request to `GET /insights?department_id=5` (Clinical Operations belonging to Crestline Health).
+   - *Expected result:* HTTP 403 Forbidden with `"Cannot access department belonging to another organization"`.
+4. **Verify Return Navigation:**
+   - On the Insights page, click **Back to Dashboard**.
+   - *Expected result:* Returns immediately to the Executive Dashboard view without page reload.
+
+## Change 18: Dashboard "Other teams" Suppressed Group Row Display
+
+### Problem in One Line
+When departments with fewer than 5 completed respondents were merged, the "Other teams" aggregate row was omitted entirely if the combined group was below 5 respondents rather than remaining visible with sensitive metrics suppressed.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/dashboard.py`
+**Before:**
+```python
+    other_completed_count = len(other_teams_completed_ids)
+    if other_completed_count >= 5:
+        ...
+        departments.append({ ... "department": "Other teams", ... })
+        hidden_small_groups = False
+    else:
+        hidden_small_groups = has_suppressed_departments
+```
+
+**After:**
+```python
+    if has_suppressed_departments:
+        other_completed_count = len(other_teams_completed_ids)
+        if other_completed_count >= 5:
+            ...
+            departments.append({ ... "department": "Other teams", "suppressed": False, ... })
+            hidden_small_groups = False
+        else:
+            departments.append({
+                "id": None,
+                "department": "Other teams",
+                "employees": None,
+                "responded": None,
+                "average_score": None,
+                "level": "Suppressed for privacy",
+                "risk_counts": {},
+                "suppressed": True,
+            })
+            hidden_small_groups = True
+    else:
+        hidden_small_groups = False
+```
+
+#### `frontend/src/pages/Dashboard.jsx`
+**Before:**
+```jsx
+          {data.departments.map((d) => (
+            <tr key={d.department}>
+              <td><b>{d.department}</b></td>
+              <td>{d.employees}</td>
+              <td>{d.responded}</td>
+              <td>{d.average_score !== null ? d.average_score : "—"}</td>
+              <td>{d.level}</td>
+              ...
+```
+
+**After:**
+```jsx
+          {data.departments.map((d) => (
+            <tr key={d.department}>
+              <td><b>{d.department}</b></td>
+              {d.suppressed ? (
+                <td colSpan={4} style={{ padding: "8px", color: "#666", fontStyle: "italic" }}>
+                  Suppressed for privacy
+                </td>
+              ) : (
+                <>
+                  <td>{d.employees !== null ? d.employees : "—"}</td>
+                  <td>{d.responded !== null ? d.responded : "—"}</td>
+                  <td>{d.average_score !== null ? d.average_score : "—"}</td>
+                  <td>{d.level}</td>
+                </>
+              )}
+              ...
+```
+
+### Manual Verification Steps
+1. **Verify "Other teams" row when combined group has < 5 completed respondents:**
+   - Log in as `alex@apex.test` (`pulse123`) and view Apex Global dashboard.
+   - *Expected result before:* Only Engineering and Product rows shown; no "Other teams" row.
+   - *Expected result after:* "Other teams" row is visible below Product, showing "Suppressed for privacy" spanning the metric columns, with no Action button, and no exact respondent count or headcount exposed.
+2. **Verify "Other teams" row when combined group has >= 5 completed respondents:**
+   - When 2 small departments (e.g. 2 and 3 members) combine to 5 completed respondents.
+   - *Expected result:* "Other teams" row is visible displaying headcount, responded count (5), average score, maturity level, and combined risk counts, with no Action button.
+3. **Verify API Privacy Boundary:**
+   - Request `GET /dashboard` when small groups are suppressed.
+   - *Expected result:* `"Other teams"` payload has `employees: null`, `responded: null`, `average_score: null`, `level: "Suppressed for privacy"`, and `risk_counts: {}`. No department names, member counts, or risk flags from suppressed departments are leaked.
+
+## Change 19: Display "Other teams" Aggregate Metrics and Scoped Insights with Rare-Risk Safeguards
+
+### Problem in One Line
+The dashboard previously masked "Other teams" metrics when the combined aggregate was under 5 completed respondents and omitted Insights support for the aggregate row, preventing administrators from accessing safe high-level governance guidance for small teams.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/dashboard.py`
+**Before:**
+```python
+        else:
+            departments.append({
+                "id": None,
+                "department": "Other teams",
+                "employees": None,
+                "responded": None,
+                "average_score": None,
+                "level": "Suppressed for privacy",
+                "risk_counts": {},
+                "suppressed": True,
+            })
+            hidden_small_groups = True
+```
+
+**After:**
+```python
+        else:
+            departments.append({
+                "id": "other",
+                "department": "Other teams",
+                "employees": other_teams_employees,
+                "responded": other_completed_count,
+                "average_score": round(other_avg, 2) if other_avg is not None else None,
+                "level": maturity_level(other_avg) if other_avg is not None else "Not assessed",
+                "risk_counts": {},
+                "_other_flag_counts": other_flag_counts,
+                "suppressed": False,
+            })
+            hidden_small_groups = True
+```
+
+#### `backend/app/routes/insights.py`
+**Before:**
+```python
+@router.get("")
+def get_insights(department_id: int | None = None, ...):
+    ...
+```
+
+**After:**
+```python
+@router.get("")
+def get_insights(department_id: str | None = None, ...):
+    if department_id is not None:
+        dept_str = str(department_id).strip().lower()
+        if dept_str in ("other", "other teams"):
+            target_dept = next((d for d in departments if d.get("department") == "Other teams"), None)
+            if not target_dept:
+                raise HTTPException(404, "Other teams aggregate not found")
+            res = insights_service.generate_other_teams_insights(target_dept)
+            return {"organization": agg["organization"], "department_id": "other", "department": "Other teams", ...}
+```
+
+#### `backend/app/services/insights_service.py`
+**Added:**
+```python
+def generate_other_teams_insights(target_dept: dict) -> dict:
+    ...
+    # Rare-risk suppression (< 2 occurrences) for sparse groups (< 5 respondents)
+    safe_risks = {k: v for k, v in raw_risks.items() if k in ALLOWED_FLAGS and v >= 2} if responded >= 2 else {}
+    if not safe_risks:
+        return {"insights": [{ ... "observed_pattern": "Diagnostic participation in combined small teams is sparse (< 5 respondents)...", "priority": "low" }], "source": "rules"}
+    ...
+```
+
+### Manual Verification Steps
+1. **Verify "Other teams" aggregate metrics on Dashboard:**
+   - Sign in as `alex@apex.test` (`pulse123`) and view Apex Global dashboard.
+   - *Expected result:* "Other teams" row shows Headcount: 5, Responded: 2, Average Score: 3.0, Maturity Level: Practitioner, and an **Insights** button.
+   - *Privacy Check:* Individual department names (Customer Success, Legal) and risk counts remain absent from the dashboard payload.
+2. **Access Insights for "Other teams":**
+   - Click **Insights** on the "Other teams" row.
+   - *Expected result:* Navigates to `Apex Global - Other teams Insights`. Due to sparse participation, displays a general low-priority governance recommendation without exposing individual rare risks.
+3. **Verify Tenant Isolation and Department Protection:**
+   - Attempt `GET /insights?department_id=other&org_id=2` with Apex Global admin token.
+   - *Expected result:* HTTP 403 Forbidden.
+   - Attempt `GET /insights?department_id=3` (Customer Success, individual small department).
+   - *Expected result:* HTTP 403 Forbidden (individual department remains suppressed).
+
+## Change 20: Fix Live LLM Scoring Endpoint Protocol and Runtime URL Sanitization
+
+### Problem in One Line
+`POST /diagnostic/submit` failed with HTTP 503 (`LLM request failed: Request URL is missing an 'http://' or 'https://' protocol`) due to unstripped quote characters from `.env` variable parsing and an invalid Google RPC URL format instead of the OpenAI chat completions endpoint.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/config.py`
+**Before:**
+```python
+if os.path.exists(_env_path):
+    for line in open(_env_path):
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+LLM_API_URL = os.getenv("LLM_API_URL", "")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "")
+```
+
+**After:**
+```python
+def _clean_env(name: str, default: str = "") -> str:
+    v = os.getenv(name, default).strip()
+    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+        v = v[1:-1].strip()
+    return v
+
+LLM_API_URL = _clean_env("LLM_API_URL", "")
+LLM_API_KEY = _clean_env("LLM_API_KEY", "")
+LLM_MODEL = _clean_env("LLM_MODEL", "")
+```
+
+#### `backend/app/services/llm.py`
+**Before:**
+```python
+def score_answer(question: str, answer: str) -> tuple[str, str]:
+    if AI_MODE == "mock":
+        return _mock(answer), "mock"
+    if not LLM_API_KEY or not LLM_API_URL:
+        raise RuntimeError("LLM API key or URL is not configured for live AI scoring")
+    try:
+        r = httpx.post(
+            LLM_API_URL,
+            headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+            ...
+```
+
+**After:**
+```python
+def score_answer(question: str, answer: str) -> tuple[str, str]:
+    if AI_MODE == "mock":
+        return _mock(answer), "mock"
+
+    sanitized_url = (LLM_API_URL or "").strip().strip('"').strip("'")
+    if not LLM_API_KEY or not sanitized_url:
+        raise RuntimeError("LLM API key or URL is not configured for live AI scoring")
+
+    logger.info("Executing LLM scoring request: endpoint=%s, model=%s, key_configured=%s",
+                sanitized_url, LLM_MODEL, bool(LLM_API_KEY))
+
+    try:
+        r = httpx.post(
+            sanitized_url,
+            headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+            ...
+```
+
+#### `backend/.env`
+**Before:**
+```ini
+LLM_API_URL=https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent
+LLM_MODEL=gemini-3.5-flash-lite
+```
+
+**After:**
+```ini
+LLM_API_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+LLM_MODEL=gemini-2.5-flash
+```
+
+### Manual Verification Steps
+1. **Verify Valid Assessment Submission:**
+   - Sign in as an employee (`vikram@northwind.test`, `pulse123`).
+   - Submit a complete diagnostic assessment with all assigned MCQs and an open answer $> 10$ characters.
+   - *Expected result before:* HTTP 503 (`Request URL is missing an 'http://' or 'https://' protocol` or HTTP 401).
+   - *Expected result after:* HTTP 200 `{"saved": 7}`, live LLM scoring succeeds, score (e.g. `4.0`) and flags are persisted, and transaction commits.
+2. **Verify Invalid Assessment Validation:**
+   - Submit an assessment with an open answer $< 10$ characters.
+   - *Expected result:* HTTP 422 Unprocessable Entity (`{"detail": "Answer for 'common-open' must be at least 10 characters"}`), and no partial records commit to the database.
+
+
+## Change 21: Organization-Level Report History, Safe Navigation & Report Deletion
+
+### Problem in One Line
+Saved assessment reports disappeared from the UI when an employee navigated back because the frontend lacked a history viewer and backend cross-membership report listing, while diagnostic lacked a non-submitting Back action and report retained an unwanted Retake button.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/reports.py`
+**Before:**
+```python
+@router.get("/me")
+def get_my_report(token_data: dict = Depends(current_user_with_org), db: Session = Depends(get_db)):
+    membership_id = token_data.get("membership_id")
+    # Only retrieved report for the active token's single organization
+    ...
+
+@router.delete("/me")
+def delete_my_report(token_data: dict = Depends(current_user_with_org), db: Session = Depends(get_db)):
+    # Only deleted report for the active token's single organization
+    ...
+```
+
+**After:**
+```python
+@router.get("")
+def list_my_reports(user: models.User = Depends(current_user), db: Session = Depends(get_db)):
+    """List diagnostic reports for the authenticated user across all organizations they belong to."""
+    reports = []
+    for mem in user.memberships:
+        rows = db.query(models.Response).filter(models.Response.membership_id == mem.id).all()
+        if not rows:
+            continue
+        scores = [r.score for r in rows if r.score is not None]
+        avg = round(sum(scores) / len(scores), 1) if scores else 0.0
+        reports.append({
+            "org_id": mem.org_id,
+            "org_name": mem.org.name,
+            "role": mem.role,
+            "job_role": mem.job_role,
+            "seniority": mem.seniority,
+            "level": maturity_level(avg),
+            "answered_count": len(rows),
+            "average_score": avg,
+        })
+    return reports
+
+@router.get("/me")
+def get_my_report(org_id: int | None = None, token_data: dict = Depends(current_user), db: Session = Depends(get_db)):
+    # Verifies user membership in target_org_id, returns 403 if not authorized
+    ...
+
+@router.delete("/me")
+def delete_my_report(org_id: int | None = None, token_data: dict = Depends(current_user), db: Session = Depends(get_db)):
+    # Verifies user membership in target_org_id, returns 403 if not authorized, deletes only that org's responses
+    ...
+```
+
+#### `frontend/src/pages/Report.jsx`
+**Before:**
+```jsx
+<div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+  <button onClick={onBack} style={{ background: "#666" }}>Back</button>
+  <button onClick={onRetake}>Retake Diagnostic</button>
+</div>
+```
+
+**After:**
+```jsx
+<div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+  <button onClick={onBack} style={{ background: "#666" }}>Back</button>
+</div>
+```
+
+#### `frontend/src/pages/Diagnostic.jsx`
+**Before:**
+```jsx
+export default function Diagnostic({ token, user, org, onDone }) {
+  ...
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <h2>Your AI diagnostic</h2>
+```
+
+**After:**
+```jsx
+export default function Diagnostic({ token, user, org, onDone, onBack }) {
+  ...
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem" }}>
+        <h2 style={{ margin: 0 }}>Your AI diagnostic</h2>
+        {onBack && (
+          <button onClick={onBack} style={{ background: "#666" }}>Back</button>
+        )}
+      </div>
+```
+
+#### `frontend/src/pages/OrgPicker.jsx`
+**Before:**
+```jsx
+// Rendered only organization buttons that routed directly to diagnostic
+{organizations.map(o => (
+  <button key={o.id} onClick={() => pick(o)}>
+    {o.name} <small>({o.role})</small>
+  </button>
+))}
+```
+
+**After:**
+```jsx
+// Fetches GET /reports on mount and renders "Previous Reports" section
+<div style={{ marginTop: "2rem", borderTop: "1px solid #ccc", paddingTop: "1rem" }}>
+  <h3 style={{ marginBottom: "0.5rem" }}>Previous Reports</h3>
+  {reports.length === 0 ? (
+    <p style={{ color: "#666", fontSize: "0.9rem" }}>No previous reports yet.</p>
+  ) : (
+    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+      {reports.map((r) => (
+        <div key={r.org_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px", border: "1px solid #ddd", borderRadius: "4px" }}>
+          <div>
+            <strong>{r.org_name}</strong>{" "}
+            <span style={{ fontSize: "0.85rem", color: "#2e7d32" }}>
+              ✓ Report Available ({r.level})
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button onClick={() => viewReport(r)}>View Report</button>
+            <button onClick={() => handleDelete(r)} style={{ background: "#d32f2f", fontSize: "0.8rem", padding: "4px 8px" }}>Delete</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )}
+</div>
+```
+
+### Manual Verification Steps
+1. Sign in as employee with reports across multiple orgs (`marcus@apex.test`, `pulse123`).
+2. Verify "Previous Reports" displays Apex Global and Crestline Health entries with "View Report" and "Delete".
+3. Click "View Report" on Apex Global: Confirm the report displays correctly with no "Retake Diagnostic" button.
+4. Click "Back": Confirm navigation returns to organization picker and the report entry remains visible.
+5. Click "Apex Global" button to open diagnostic form: Confirm a "Back" button is visible in the header.
+6. Click "Back" without submitting: Confirm no data is sent and the report remains intact.
+7. Click "Delete" next to Apex Global: Confirm browser prompt appears, and upon confirmation, the Apex entry is removed immediately from the UI and backend database.
+8. Reload page: Confirm Apex Global report does not reappear, while Crestline Health report remains fully intact.
+9. Attempt unauthorized cross-org report access (`GET /reports/me?org_id=999`) or deletion: Confirm backend returns HTTP 403 Forbidden.
