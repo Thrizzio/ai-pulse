@@ -53,6 +53,7 @@ def submit(body: SubmitIn, m: models.Membership = Depends(current_membership), d
             if option is None:
                 raise HTTPException(422, f"Invalid option for {q['id']}")
 
+    db.query(models.Response).filter_by(membership_id=m.id).delete()
     bank = expected_map
     for a in body.answers:
         q = bank.get(a.question_id)

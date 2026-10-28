@@ -283,3 +283,51 @@ def submit(body: SubmitIn, m: models.Membership = Depends(current_membership), d
 5. **Submit complete and valid answers to all 6 assigned questions:**
    - POST `/diagnostic/submit` with valid answers to all 6 assigned questions.
    - *Expected result:* HTTP 200 OK `{"saved": 6}`.
+
+
+## Change 5: Atomic Answer Replacement in /diagnostic/submit (Fix Lifetime Averaging)
+
+### Problem in One Line
+Diagnostic submissions appended new response rows without deleting previous answers, causing repeated attempts to accumulate in the database and corrupting individual and team averages over time.
+
+### Before and After Code (Key Lines)
+
+#### `backend/app/routes/diagnostic.py`
+**Before:**
+```python
+    bank = expected_map
+    for a in body.answers:
+        q = bank.get(a.question_id)
+        resp = models.Response(membership_id=m.id, question_id=q["id"], answer=a.answer.strip())
+        ...
+        db.add(resp)
+    db.commit()
+```
+
+**After:**
+```python
+    # Delete previous responses for this membership in the same transaction
+    db.query(models.Response).filter_by(membership_id=m.id).delete()
+
+    bank = expected_map
+    for a in body.answers:
+        q = bank.get(a.question_id)
+        resp = models.Response(membership_id=m.id, question_id=q["id"], answer=a.answer.strip())
+        ...
+        db.add(resp)
+    db.commit()
+```
+
+### Manual Verification Steps
+1. **Sign in as Priya & select Northwind (`org_id: 1`):**
+   - Call `POST /auth/login` with `{"email": "priya@northwind.test", "password": "pulse123"}`.
+   - Call `POST /auth/select-org` with `{"org_id": 1}` to get scoped Bearer token.
+2. **Check initial report:**
+   - GET `/reports/me` $\rightarrow$ returns `answered: 2` (seeded response rows).
+3. **Submit a full diagnostic attempt (6 questions):**
+   - POST `/diagnostic/submit` with all 6 required answers $\rightarrow$ returns HTTP 200 `{"saved": 6}`.
+   - GET `/reports/me` $\rightarrow$ returns `answered: 6`.
+4. **Retake and submit the diagnostic a second time:**
+   - POST `/diagnostic/submit` with 6 answers again.
+   - *Before fix:* GET `/reports/me` returned `answered: 14` (accumulated 2 + 6 + 6) and averaged old and new scores together.
+   - *After fix:* GET `/reports/me` returns `answered: 6` (replaces previous responses), with scores reflecting only the latest submission.

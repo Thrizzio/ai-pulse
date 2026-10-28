@@ -52,3 +52,20 @@ def test_submit_validation(client):
     assert client.post("/diagnostic/submit", json={"answers": []}, headers=headers).status_code == 422
     assert client.post("/diagnostic/submit", json={"answers": [{"question_id": "common-freq", "answer": "Daily"}]}, headers=headers).status_code == 422
     assert client.post("/diagnostic/submit", json={"answers": [{"question_id": "common-open", "answer": ""}]}, headers=headers).status_code == 422
+
+
+def test_submit_replaces_previous_answers(client):
+    # Proves submitting replaces previous answers in one transaction instead of accumulating lifetime responses.
+    headers, _ = login(client, "priya@northwind.test", "Northwind Logistics")
+    answers = [
+        {"question_id": "common-freq", "answer": "Daily"},
+        {"question_id": "common-policy", "answer": "Yes, I've read it"},
+        {"question_id": "common-data", "answer": "Usually"},
+        {"question_id": "common-review", "answer": "Check facts and edit it"},
+        {"question_id": "common-open", "answer": "I used AI to draft customer replies yesterday."},
+        {"question_id": "sup-drafts", "answer": "To draft replies I then edit"},
+    ]
+    assert client.post("/diagnostic/submit", json={"answers": answers}, headers=headers).status_code == 200
+    assert client.post("/diagnostic/submit", json={"answers": answers}, headers=headers).status_code == 200
+    report = client.get("/reports/me", headers=headers).json()
+    assert report["answered"] == 6
