@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../api.js";
 
-export default function Diagnostic({ onDone }) {
+export default function Diagnostic({ onDone, onBack }) {
   const [questions, setQuestions] = useState([]);
   const [answers, setAnswers] = useState({});
 
@@ -17,7 +17,10 @@ export default function Diagnostic({ onDone }) {
 
   return (
     <div className="card">
-      <h2>Your AI diagnostic</h2>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+        <h2 style={{ margin: 0 }}>Your AI diagnostic</h2>
+        {onBack && <button onClick={onBack} style={{ background: "#666" }}>Back</button>}
+      </div>
       {questions.map((q) => (
         <div key={q.id}>
           <p><b>{q.text}</b></p>

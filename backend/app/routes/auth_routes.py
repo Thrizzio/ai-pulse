@@ -31,6 +31,12 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 
 
 @router.post("/select-org")
-def select_org(body: SelectOrgIn, user: models.User = Depends(current_user)):
-    # Issue a token scoped to the chosen organization
+def select_org(body: SelectOrgIn, user: models.User = Depends(current_user), db: Session = Depends(get_db)):
+    membership = (
+        db.query(models.Membership)
+        .filter_by(user_id=user.id, org_id=body.org_id)
+        .first()
+    )
+    if not membership:
+        raise HTTPException(403, "Not a member of this organization")
     return {"token": make_token(user.id, body.org_id), "org_id": body.org_id}
